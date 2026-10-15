@@ -81,9 +81,11 @@ def _float_env(name: str, default: float) -> float:
 # queued one. A queued job otherwise begins within ~0.5 s of the previous job's
 # last byte, while the printer is still feeding the cutter gap; bytes sent then
 # can be dropped, which shows up as a blank or garbled start to the receipt.
-# Presses made by hand always had at least the 3 s post-print debounce, so use
-# the same gap. Tune with PC1_QUEUED_PRESS_SETTLE_SECONDS once prints look clean.
-QUEUED_PRESS_SETTLE_SECONDS = _float_env("PC1_QUEUED_PRESS_SETTLE_SECONDS", 3.0)
+# Hand presses are already separated by the 3 s post-print debounce, but that
+# was not enough for queued jobs on a real QR204 (still truncated or garbled);
+# 10 s was verified clean on hardware. Lower it with
+# PC1_QUEUED_PRESS_SETTLE_SECONDS if your printer stays clean with less.
+QUEUED_PRESS_SETTLE_SECONDS = _float_env("PC1_QUEUED_PRESS_SETTLE_SECONDS", 10.0)
 queued_presses: Deque[int] = deque()
 last_accepted_press_position: Optional[int] = None
 last_accepted_press_time = 0.0
