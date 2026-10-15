@@ -15,6 +15,11 @@ DEFAULT_NUM_WORDS = 10
 MIN_NUM_WORDS = 3
 MAX_NUM_WORDS = 18
 
+# Keeps the inverted answer block narrower than the printer's content area
+# (384 dots minus margins, including the wider left margin used in selection
+# mode) so the driver never has to rescale it.
+ANSWER_BLOCK_MARGIN_DOTS = 12
+
 
 def _clamp_num_words(value: Any) -> int:
     try:
@@ -314,6 +319,84 @@ def render_crossword_grid(generator: CrosswordGenerator, cell_size: int, font_pa
         
     return img
 
+def _printer_text_font(printer: Any, style: str = "light"):
+    """Return a real PIL font for ``style``, falling back to PIL's default.
+
+    The serial driver exposes ``_get_font``. Mock printers and test doubles may
+    not, or may return placeholders, so only genuine PIL fonts are used.
+    """
+    getter = getattr(printer, "_get_font", None)
+    if callable(getter):
+        try:
+            font = getter(style)
+        except Exception:
+            logger.debug("Printer font lookup failed for style %r", style, exc_info=True)
+        else:
+            if isinstance(font, (ImageFont.FreeTypeFont, ImageFont.ImageFont)):
+                return font
+    return ImageFont.load_default()
+
+
+def render_text_block(
+    text: str,
+    width: int,
+    font,
+    inverted: bool = False,
+    margin: int = 2,
+    line_gap: int = 4,
+) -> Image.Image:
+    """Render word-wrapped text as a 1-bit bitmap ``width`` dots wide.
+
+    With ``inverted=True`` the whole block is rotated 180 degrees, so it reads
+    upside-down (like the answer key in a newspaper crossword).
+    """
+    measure = ImageDraw.Draw(Image.new("L", (1, 1), 255))
+    max_line_width = max(1, width - 2 * margin)
+
+    def fits(s: str) -> bool:
+        return measure.textlength(s, font=font) <= max_line_width
+
+    lines: List[str] = []
+    current = ""
+    for word in text.split():
+        # Hard-break a single word that is wider than a whole line.
+        while not fits(word) and len(word) > 1:
+            cut = len(word) - 1
+            while cut > 1 and not fits(word[:cut]):
+                cut -= 1
+            if current:
+                lines.append(current)
+                current = ""
+            lines.append(word[:cut])
+            word = word[cut:]
+        candidate = f"{current} {word}" if current else word
+        if fits(candidate) or not current:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    if not lines:
+        lines = [""]
+
+    bbox = measure.textbbox((0, 0), "Ag", font=font)
+    top = bbox[1]
+    line_height = (bbox[3] - bbox[1]) + line_gap
+    height = 2 * margin + line_height * len(lines)
+
+    img = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(img)
+    for i, line in enumerate(lines):
+        draw.text((margin, margin + i * line_height - top), line, font=font, fill=0)
+
+    # Hard threshold (no dithering) keeps thin glyphs crisp on thermal paper.
+    img = img.point(lambda p: 255 if p > 127 else 0).convert("1")
+    if inverted:
+        img = img.transpose(Image.Transpose.ROTATE_180)
+    return img
+
+
 @register_module(
     type_id="crossword",
     label="Crossword",
@@ -444,5 +527,17 @@ def execute_crossword(printer, config: Dict[str, Any], module_name: str = None):
     for clue in sorted(gen.words_placed, key=lambda x: x['num']):
         answers.append(f"{clue['num']}{clue['dir'][0].upper()}:{clue['word']}")
     
-    printer.print_caption("ANSWERS: " + ", ".join(answers))
+    # Print the answer key upside-down so it can't be read at a glance. The
+    # serial driver already rotates the whole receipt 180 degrees when it
+    # flushes, so a bitmap pre-rotated here comes out inverted relative to
+    # everything else on the print.
+    answer_text = "ANSWERS: " + ", ".join(answers)
+    logger.debug("Crossword answers (printed inverted): %s", answer_text)
+    answer_img = render_text_block(
+        answer_text,
+        max(1, printer_width - ANSWER_BLOCK_MARGIN_DOTS),
+        _printer_text_font(printer, "light"),
+        inverted=True,
+    )
+    printer.print_image(answer_img)
     printer.feed(1)

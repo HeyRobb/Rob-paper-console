@@ -390,7 +390,7 @@ paper-console/
 
 **Word of the Day:** Merriam Webster's word of the day
 
-**Crossword:** Easy / Medium / Hard; generated crossword puzzle printed as bitmap grid.
+**Crossword:** Easy / Medium / Hard; generated crossword puzzle printed as bitmap grid. The answer key prints at the bottom of the receipt upside-down so it can't be read at a glance.
 
 **Word Search:** Easy / Hard; generated word search puzzle printed as bitmap grid.
 

@@ -4,13 +4,17 @@ import os
 import random
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+from PIL import Image, ImageChops, ImageFont
 from app.modules.crossword import (
+    ANSWER_BLOCK_MARGIN_DOTS,
     MAX_NUM_WORDS,
     MIN_NUM_WORDS,
     CrosswordGenerator,
     _clamp_num_words,
+    _printer_text_font,
     execute_crossword,
+    render_text_block,
 )
 
 def test_crossword_generator_initialization():
@@ -163,3 +167,99 @@ def test_no_duplicate_words():
             print("-" * 30)
     
     assert not duplicates, "Duplicate words found in the crossword word list"
+
+
+ANSWER_TEXT = "ANSWERS: 1A:CAT, 2D:DOG, 3A:PLANET, 4D:ORBIT, 5A:COMET"
+
+
+def test_render_text_block_inverted_is_upright_rotated_180():
+    font = ImageFont.load_default()
+    upright = render_text_block(ANSWER_TEXT, 372, font)
+    inverted = render_text_block(ANSWER_TEXT, 372, font, inverted=True)
+
+    assert upright.mode == inverted.mode == "1"
+    assert inverted.size == upright.size
+    # Exactly the upright block turned upside-down...
+    rotated = upright.transpose(Image.Transpose.ROTATE_180)
+    assert ImageChops.difference(inverted, rotated).getbbox() is None
+    # ...and genuinely different from the upright one.
+    assert ImageChops.difference(inverted, upright).getbbox() is not None
+
+
+def test_render_text_block_wraps_to_the_requested_width():
+    font = ImageFont.load_default()
+    long_text = "ANSWERS: " + ", ".join(f"{i}A:WORD{i}" for i in range(1, 19))
+    narrow = render_text_block(long_text, 120, font)
+    wide = render_text_block(long_text, 372, font)
+    single_line = render_text_block("ANSWERS:", 372, font)
+
+    assert narrow.width == 120 and wide.width == 372
+    assert single_line.height < wide.height < narrow.height
+
+
+def test_render_text_block_breaks_a_word_wider_than_the_line():
+    font = ImageFont.load_default()
+    img = render_text_block("X" * 200, 100, font, inverted=True)
+    assert img.width == 100
+    assert img.height > render_text_block("X", 100, font).height
+
+
+def test_render_text_block_empty_text_returns_a_blank_image():
+    img = render_text_block("", 100, ImageFont.load_default(), inverted=True)
+    assert img.width == 100
+    assert img.getbbox() is not None  # 1-bit white background is non-zero
+    assert ImageChops.invert(img.convert("L")).getbbox() is None  # no ink
+
+
+def test_printer_text_font_uses_real_fonts_and_ignores_placeholders():
+    real = ImageFont.load_default()
+    printer = MagicMock()
+    printer._get_font.return_value = real
+    assert _printer_text_font(printer, "light") is real
+    printer._get_font.assert_called_once_with("light")
+
+    # A mock printer that hands back a placeholder falls back to PIL's default.
+    placeholder = MagicMock()
+    fallback = _printer_text_font(placeholder, "light")
+    assert isinstance(fallback, (ImageFont.FreeTypeFont, ImageFont.ImageFont))
+
+    # A printer with no font support at all, or one that raises, also works.
+    class NoFonts:
+        pass
+
+    class BrokenFonts:
+        def _get_font(self, style):
+            raise RuntimeError("boom")
+
+    for p in (NoFonts(), BrokenFonts()):
+        assert isinstance(
+            _printer_text_font(p, "light"), (ImageFont.FreeTypeFont, ImageFont.ImageFont)
+        )
+
+
+def test_execute_crossword_prints_answers_as_an_inverted_image():
+    random.seed(7)
+    printer = MagicMock()
+    printer.PRINTER_WIDTH_DOTS = 384
+
+    with patch("app.modules.crossword.render_text_block", wraps=render_text_block) as spy:
+        execute_crossword(printer, {"num_words": 6, "difficulty": "Easy"})
+
+    # The answer key is rendered inverted, as one block starting with "ANSWERS: ".
+    assert spy.call_count == 1
+    args, kwargs = spy.call_args
+    assert args[0].startswith("ANSWERS: ")
+    assert args[1] == 384 - ANSWER_BLOCK_MARGIN_DOTS
+    assert kwargs.get("inverted") is True
+
+    # It goes out as the second image (after the grid), not as caption text.
+    assert printer.print_image.call_count == 2
+    answer_img = printer.print_image.call_args_list[-1].args[0]
+    assert answer_img.mode == "1"
+    assert answer_img.width == 384 - ANSWER_BLOCK_MARGIN_DOTS
+    assert not any(
+        str(c.args[0]).startswith("ANSWERS")
+        for c in printer.print_caption.call_args_list
+    )
+    # The "hidden below" hint stays as normal, upright text.
+    printer.print_caption.assert_any_call("Solution hidden below...")
