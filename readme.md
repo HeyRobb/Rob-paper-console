@@ -81,6 +81,8 @@ When a user unboxes a PC-1 and powers it on for the first time, the expected flo
 6. **Normal daily usage**
    - Turn dial to select channel (1-8)
    - Press button to print selected channel
+   - Printing doesn't block the button: while a channel is printing, turn the dial and press again to queue up to 8 more channels. Each press remembers the dial position it was made at, and queued channels print in order once the current one finishes, after a 10 second pause so the printer can finish feeding paper (adjustable with the `PC1_QUEUED_PRESS_SETTLE_SECONDS` environment variable). Pressing the same position again within a few seconds is treated as an accidental double-tap and ignored.
+   - Hold button ~5 seconds during a print to cancel it (this also clears any queued presses)
    - Hold button ~5 seconds (half-line paper cue appears at threshold), then release to open **Quick Actions**:
      - `1` Table of Contents
      - `2` System Monitor
@@ -388,7 +390,7 @@ paper-console/
 
 **Word of the Day:** Merriam Webster's word of the day
 
-**Crossword:** Easy / Medium / Hard; generated crossword puzzle printed as bitmap grid.
+**Crossword:** Easy / Medium / Hard; generated crossword puzzle printed as bitmap grid. The answer key prints at the bottom of the receipt upside-down so it can't be read at a glance.
 
 **Word Search:** Easy / Hard; generated word search puzzle printed as bitmap grid.
 

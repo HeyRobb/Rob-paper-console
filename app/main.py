@@ -131,6 +131,8 @@ from app.hardware import (
     button,
     _is_raspberry_pi,
     try_begin_print_job,
+    submit_button_press,
+    begin_next_queued_press,
     reserve_hold_action,
     promote_hold_to_print_job,
     request_print_cancel,
@@ -535,10 +537,20 @@ global_loop = None
 
 
 def on_button_press_threadsafe():
-    """Callback that schedules the trigger on the main event loop."""
+    """Callback that schedules the trigger on the main event loop.
+
+    If a receipt is already printing, the press is queued together with the
+    dial position it was made at and replayed once the printer is idle, so the
+    knob can be turned and the button pressed again without waiting.
+    """
     global global_loop
 
-    if not try_begin_print_job(debounce=True):
+    # Capture the dial position now: a queued press must keep the selection it
+    # was made with even if the knob is turned again before it is replayed.
+    position = dial.read_position()
+
+    outcome = submit_button_press(position)
+    if outcome != "started":
         return
 
     try:
@@ -548,7 +560,6 @@ def on_button_press_threadsafe():
 
             if is_selection_mode_active():
                 # In selection mode: use dial position as choice input
-                position = dial.read_position()
                 asyncio.run_coroutine_threadsafe(
                     handle_selection_async(position), global_loop
                 )
@@ -561,6 +572,66 @@ def on_button_press_threadsafe():
     except Exception:
         # Failed to schedule, reset flag
         clear_print_reservation(clear_hold=False)
+
+
+def _dispatch_next_queued_press():
+    """Start the oldest queued button press if the printer is idle.
+
+    Registered as the hardware idle callback, so it can run on any thread. The
+    printer reservation is taken atomically with dequeuing, and released by the
+    replay coroutine, which then triggers the next queued press in turn.
+    """
+    global global_loop
+
+    next_press = begin_next_queued_press()
+    if next_press is None:
+        return
+    position, settle_wait = next_press
+
+    logger.info(
+        "Replaying queued button press for position %s (settling %.1fs first).",
+        position,
+        settle_wait,
+    )
+    try:
+        if global_loop and global_loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                handle_queued_press_async(position, settle_wait), global_loop
+            )
+        else:
+            clear_print_reservation(clear_hold=False)
+    except Exception:
+        clear_print_reservation(clear_hold=False)
+
+
+async def handle_queued_press_async(position: int, settle_wait: float = 0.0):
+    """Replay a press that was queued while the printer was busy.
+
+    The printer stays reserved for this press while it first waits out
+    ``settle_wait``: the previous receipt's paper feed needs to finish before new
+    data arrives, or the printer drops the first bytes (blank or garbled start).
+
+    The press is interpreted as if it had happened the moment the printer became
+    free: a menu choice if a selection mode (adventure, Quick Actions) is active
+    now, otherwise a print of the channel it was made on. Both paths release the
+    printer reservation when done, which starts the next queued press.
+    """
+    from app.selection_mode import is_selection_mode_active
+
+    if settle_wait > 0:
+        await asyncio.sleep(settle_wait)
+
+    # Holding the button to cancel during the pause also cancels this replay.
+    cancel_requested = getattr(printer, "is_cancel_requested", None)
+    if callable(cancel_requested) and cancel_requested():
+        logger.info("Queued button press for position %s cancelled.", position)
+        clear_print_reservation(clear_hold=False)
+        return
+
+    if is_selection_mode_active():
+        await handle_selection_async(position)
+    else:
+        await trigger_channel(position)
 
 
 async def handle_selection_async(dial_position: int):
@@ -1317,6 +1388,10 @@ def on_factory_reset_threadsafe():
         logger.info("Ignoring factory reset hold because printer is already busy.")
         return
 
+    # The device is about to wipe its settings and reboot; queued channel
+    # prints must not run in the middle of that.
+    hardware.clear_press_queue()
+
     if global_loop and global_loop.is_running():
         asyncio.run_coroutine_threadsafe(factory_reset_trigger(), global_loop)
     else:
@@ -1375,8 +1450,11 @@ async def lifespan(app: FastAPI):
     slack_manager.init_runtime(trigger_channel)
     asyncio.create_task(slack_manager.reconcile())
 
+    # Replay button presses that were queued while a receipt was printing
+    hardware.set_idle_callback(_dispatch_next_queued_press)
+
     # Initialize Main Button Callbacks
-    # Short press = Print
+    # Short press = Print (queued if a receipt is already printing)
     button.set_callback(on_button_press_threadsafe)
     # Long press (5s) = Quick actions menu
     button.set_long_press_callback(on_button_long_press_threadsafe)
@@ -1388,7 +1466,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown - cancel all background tasks
+    # Shutdown - stop replaying queued presses, then cancel all background tasks
+    hardware.set_idle_callback(None)
+    hardware.clear_press_queue()
     for task in [email_polling_task, scheduler_task, task_monitor_task]:
         if task:
             task.cancel()
