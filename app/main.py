@@ -583,15 +583,20 @@ def _dispatch_next_queued_press():
     """
     global global_loop
 
-    position = begin_next_queued_press()
-    if position is None:
+    next_press = begin_next_queued_press()
+    if next_press is None:
         return
+    position, settle_wait = next_press
 
-    logger.info("Replaying queued button press for position %s.", position)
+    logger.info(
+        "Replaying queued button press for position %s (settling %.1fs first).",
+        position,
+        settle_wait,
+    )
     try:
         if global_loop and global_loop.is_running():
             asyncio.run_coroutine_threadsafe(
-                handle_queued_press_async(position), global_loop
+                handle_queued_press_async(position, settle_wait), global_loop
             )
         else:
             clear_print_reservation(clear_hold=False)
@@ -599,8 +604,12 @@ def _dispatch_next_queued_press():
         clear_print_reservation(clear_hold=False)
 
 
-async def handle_queued_press_async(position: int):
+async def handle_queued_press_async(position: int, settle_wait: float = 0.0):
     """Replay a press that was queued while the printer was busy.
+
+    The printer stays reserved for this press while it first waits out
+    ``settle_wait``: the previous receipt's paper feed needs to finish before new
+    data arrives, or the printer drops the first bytes (blank or garbled start).
 
     The press is interpreted as if it had happened the moment the printer became
     free: a menu choice if a selection mode (adventure, Quick Actions) is active
@@ -608,6 +617,16 @@ async def handle_queued_press_async(position: int):
     printer reservation when done, which starts the next queued press.
     """
     from app.selection_mode import is_selection_mode_active
+
+    if settle_wait > 0:
+        await asyncio.sleep(settle_wait)
+
+    # Holding the button to cancel during the pause also cancels this replay.
+    cancel_requested = getattr(printer, "is_cancel_requested", None)
+    if callable(cancel_requested) and cancel_requested():
+        logger.info("Queued button press for position %s cancelled.", position)
+        clear_print_reservation(clear_hold=False)
+        return
 
     if is_selection_mode_active():
         await handle_selection_async(position)

@@ -4,7 +4,7 @@ import platform
 import threading
 import time
 from collections import deque
-from typing import Callable, Deque, Optional
+from typing import Callable, Deque, Optional, Tuple
 
 from app.config import PRINTER_WIDTH
 
@@ -66,6 +66,24 @@ HOLD_ACTION_TIMEOUT_SECONDS = 20.0
 # printer is idle. All queue state is guarded by print_lock so that "is the
 # printer busy?" and "add to the queue" are one atomic decision.
 MAX_QUEUED_PRESSES = 8
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a non-negative float from the environment, falling back on bad input."""
+    try:
+        value = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+# Quiet time the printer gets between the end of one receipt and the start of a
+# queued one. A queued job otherwise begins within ~0.5 s of the previous job's
+# last byte, while the printer is still feeding the cutter gap; bytes sent then
+# can be dropped, which shows up as a blank or garbled start to the receipt.
+# Presses made by hand always had at least the 3 s post-print debounce, so use
+# the same gap. Tune with PC1_QUEUED_PRESS_SETTLE_SECONDS once prints look clean.
+QUEUED_PRESS_SETTLE_SECONDS = _float_env("PC1_QUEUED_PRESS_SETTLE_SECONDS", 3.0)
 queued_presses: Deque[int] = deque()
 last_accepted_press_position: Optional[int] = None
 last_accepted_press_time = 0.0
@@ -176,12 +194,14 @@ def submit_button_press(position: int) -> str:
         return "started"
 
 
-def begin_next_queued_press() -> Optional[int]:
+def begin_next_queued_press() -> Optional[Tuple[int, float]]:
     """Reserve the idle printer for the oldest queued press.
 
-    Returns that press's dial position, or None when the printer is reserved
-    or nothing is waiting. Reserving and dequeuing happen under one lock so two
-    threads can never both claim the same press, or one press and the printer.
+    Returns (dial position, seconds the caller must still wait before printing),
+    or None when the printer is reserved or nothing is waiting. The wait is
+    what remains of QUEUED_PRESS_SETTLE_SECONDS since the previous job ended.
+    Reserving and dequeuing happen under one lock so two threads can never both
+    claim the same press, or one press and the printer.
     """
     with print_lock:
         current_time = time.time()
@@ -190,9 +210,15 @@ def begin_next_queued_press() -> Optional[int]:
         if printer_reserved_locked() or not queued_presses:
             return None
 
+        # Measure from the previous job's end *before* starting this job
+        # overwrites last_print_time.
+        settle_wait = max(
+            0.0,
+            QUEUED_PRESS_SETTLE_SECONDS - (current_time - last_print_time),
+        )
         position = queued_presses.popleft()
         _begin_print_job_locked(current_time)
-        return position
+        return position, settle_wait
 
 
 def clear_press_queue() -> int:

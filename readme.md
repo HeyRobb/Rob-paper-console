@@ -81,7 +81,7 @@ When a user unboxes a PC-1 and powers it on for the first time, the expected flo
 6. **Normal daily usage**
    - Turn dial to select channel (1-8)
    - Press button to print selected channel
-   - Printing doesn't block the button: while a channel is printing, turn the dial and press again to queue up to 8 more channels. Each press remembers the dial position it was made at, and queued channels print in order as soon as the current one finishes. Pressing the same position again within a few seconds is treated as an accidental double-tap and ignored.
+   - Printing doesn't block the button: while a channel is printing, turn the dial and press again to queue up to 8 more channels. Each press remembers the dial position it was made at, and queued channels print in order once the current one finishes, after a short (about 3 second) pause so the printer can finish feeding paper. Pressing the same position again within a few seconds is treated as an accidental double-tap and ignored.
    - Hold button ~5 seconds during a print to cancel it (this also clears any queued presses)
    - Hold button ~5 seconds (half-line paper cue appears at threshold), then release to open **Quick Actions**:
      - `1` Table of Contents
