@@ -3,6 +3,11 @@
 **A small, self-hosted thermal printer for news, weather, puzzles, email, and more.**
 
 ---
+Personal changes to Travis's repo:
+- Flipped Crossword solutions upside down by using a bitmap-based capture and output
+- Added over 1,000 new "easy" crossword/word search game entries and hints
+- Added a queueing feature that allows you to rotate knob and press button for any channel while the current print is ongoing. It will print after 10 second delay which would be enough time to flush buffer on low-baud-rate printers.
+
 
 * **No screens:** output is physical thermal paper.
 * **No subscriptions:** user-owned API keys or local algorithms.
