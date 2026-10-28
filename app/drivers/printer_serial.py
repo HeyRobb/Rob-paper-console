@@ -110,6 +110,15 @@ class PrinterDriver:
     # PC1_SERIAL_MAX_BYTES_PER_SECOND to print faster, or set 0 to disable it.
     SERIAL_MAX_BYTES_PER_SECOND = _float_env("PC1_SERIAL_MAX_BYTES_PER_SECOND", 960.0)
 
+    # Solid black is much slower to print than text: the head has to heat more
+    # dots, so it feeds the paper at a fraction of the normal speed (a few mm/s
+    # on a crossword grid). While it crawls, the host keeps sending and the
+    # buffer overruns. Pacing therefore also charges every strip extra time in
+    # proportion to how black it is: this many extra seconds per row at 100%
+    # black. Raise it if garbling starts after dense areas, lower it to print
+    # dense areas faster. 0 disables the density adjustment.
+    SERIAL_DARK_ROW_SECONDS = _float_env("PC1_SERIAL_DARK_ROW_SECONDS", 0.07)
+
     # DTR is useful when it asserts, but the deployed wiring does not make it a
     # reliable prerequisite for progress. Wait for a stable assertion, then
     # stop consulting it for the current receipt if it remains high too long.
@@ -1264,7 +1273,19 @@ class PrinterDriver:
                     break
 
                 bottom = min(top + self.RASTER_STRIP_ROWS, height)
-                command = self._encode_raster_strip(img.crop((0, top, width, bottom)))
+                strip_image = img.crop((0, top, width, bottom))
+                command = self._encode_raster_strip(strip_image)
+
+                # Dense strips print slowly, so count their bytes as more than
+                # one byte's worth of pacing time.
+                pace_weight = 1.0
+                if pace_rate and self.SERIAL_DARK_ROW_SECONDS > 0:
+                    black_pixels = strip_image.convert("1").histogram()[0]
+                    density = black_pixels / float(width * (bottom - top))
+                    base_row_seconds = (width // 8) / pace_rate
+                    pace_weight += (
+                        density * self.SERIAL_DARK_ROW_SECONDS / base_row_seconds
+                    )
 
                 for offset in range(0, len(command), self.SERIAL_WRITE_CHUNK_BYTES):
                     if consult_busy_pin:
@@ -1293,7 +1314,7 @@ class PrinterDriver:
 
                     chunk = command[offset : offset + self.SERIAL_WRITE_CHUNK_BYTES]
                     written = self._write(chunk)
-                    pace_bytes += written
+                    pace_bytes += written * pace_weight
                     stats["bytes_sent"] += written
 
                 # This waits for the host UART only, not printer mechanical idle.

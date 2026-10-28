@@ -234,3 +234,33 @@ def test_higher_cap_paces_less(monkeypatch):
     fast._send_bitmap(Image.new("1", (384, 48), 1))
 
     assert sum(fast_clock.sleeps) < sum(slow_clock.sleeps) / 4
+
+
+def test_dense_black_strips_are_paced_slower_than_blank_ones(monkeypatch):
+    blank, blank_clock = _paced_driver(monkeypatch, baudrate=115200, cap=960.0)
+    blank._send_bitmap(Image.new("1", (384, 48), 1))
+    dark, dark_clock = _paced_driver(monkeypatch, baudrate=115200, cap=960.0)
+    dark_stats = dark._send_bitmap(Image.new("1", (384, 48), 0))
+
+    # Two all-black strips add 0.07 s for each of their 48 rows on top of the
+    # byte-rate time (about 2.4 s).
+    assert sum(dark_clock.sleeps) > sum(blank_clock.sleeps) + 3.0
+    assert dark_stats["pace_wait_seconds"] > 5.0
+
+
+def test_dark_row_seconds_of_zero_disables_density_adjustment(monkeypatch):
+    monkeypatch.setattr(PrinterDriver, "SERIAL_DARK_ROW_SECONDS", 0.0)
+    plain, plain_clock = _paced_driver(monkeypatch, baudrate=115200, cap=960.0)
+    plain._send_bitmap(Image.new("1", (384, 48), 1))
+    dark, dark_clock = _paced_driver(monkeypatch, baudrate=115200, cap=960.0)
+    dark._send_bitmap(Image.new("1", (384, 48), 0))
+
+    assert sum(dark_clock.sleeps) == pytest.approx(sum(plain_clock.sleeps), abs=0.01)
+
+
+def test_dense_strips_are_not_slowed_on_a_9600_baud_link(monkeypatch):
+    driver, clock = _paced_driver(monkeypatch, baudrate=9600, cap=960.0)
+
+    driver._send_bitmap(Image.new("1", (384, 48), 0))
+
+    assert clock.sleeps == []
