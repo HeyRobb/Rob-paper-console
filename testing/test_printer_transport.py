@@ -159,3 +159,78 @@ def test_bitmap_failure_is_raised_and_persisted(monkeypatch, tmp_path):
     assert records[-1]["strip"] == 1
     assert records[-1]["bytes_sent"] == 100
     assert driver.last_transport_stats["failed_strip"] == 1
+
+
+class _FakeClock:
+    """Deterministic stand-in for the driver's `time` module."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def time(self):
+        return self.now
+
+
+def _paced_driver(monkeypatch, *, baudrate, cap):
+    from app.drivers import printer_serial
+
+    clock = _FakeClock()
+    monkeypatch.setattr(printer_serial, "time", clock)
+    monkeypatch.setattr(PrinterDriver, "SERIAL_MAX_BYTES_PER_SECOND", cap)
+    driver = _make_driver(_FakeSerial())
+    driver.baudrate = baudrate
+    return driver, clock
+
+
+def test_fast_link_is_paced_to_the_byte_rate_cap(monkeypatch):
+    driver, clock = _paced_driver(monkeypatch, baudrate=115200, cap=960.0)
+
+    stats = driver._send_bitmap(Image.new("1", (384, 48), 1))
+
+    # 2 strips of (8 header + 48*24 payload + 4 guard) = 2328 bytes. The last
+    # chunk is not waited on, so the delay covers everything sent before it.
+    # Chunks are cut per strip (1164 bytes = 9 * 128 + 12), so the final chunk
+    # is 12 bytes.
+    strip_bytes = stats["bytes_sent"] // 2
+    last_chunk = strip_bytes % PrinterDriver.SERIAL_WRITE_CHUNK_BYTES
+    expected = (stats["bytes_sent"] - last_chunk) / 960.0
+    assert stats["bytes_sent"] == 2328
+    # Other sleeps (the UART flush after each strip) are not pacing waits, so
+    # compare against the pacing counter rather than every sleep.
+    assert stats["pace_wait_seconds"] == pytest.approx(expected, abs=0.01)
+    assert sum(clock.sleeps) >= stats["pace_wait_seconds"]
+
+
+def test_9600_baud_link_is_not_paced_again(monkeypatch):
+    driver, clock = _paced_driver(monkeypatch, baudrate=9600, cap=960.0)
+
+    stats = driver._send_bitmap(Image.new("1", (384, 48), 1))
+
+    assert clock.sleeps == []
+    assert stats["pace_wait_seconds"] == 0.0
+
+
+def test_pace_cap_of_zero_disables_pacing(monkeypatch):
+    driver, clock = _paced_driver(monkeypatch, baudrate=115200, cap=0.0)
+
+    stats = driver._send_bitmap(Image.new("1", (384, 48), 1))
+
+    assert clock.sleeps == []
+    assert stats["pace_wait_seconds"] == 0.0
+
+
+def test_higher_cap_paces_less(monkeypatch):
+    slow, slow_clock = _paced_driver(monkeypatch, baudrate=115200, cap=960.0)
+    slow._send_bitmap(Image.new("1", (384, 48), 1))
+    fast, fast_clock = _paced_driver(monkeypatch, baudrate=115200, cap=4800.0)
+    fast._send_bitmap(Image.new("1", (384, 48), 1))
+
+    assert sum(fast_clock.sleeps) < sum(slow_clock.sleeps) / 4

@@ -25,6 +25,15 @@ except Exception:  # pragma: no cover - non-Pi environments
 logger = logging.getLogger(__name__)
 
 
+def _float_env(name: str, default: float) -> float:
+    """Read a non-negative float from the environment, falling back on bad input."""
+    try:
+        value = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
 class PrinterTransportError(RuntimeError):
     """Raised when a receipt cannot be transmitted completely."""
 
@@ -90,6 +99,16 @@ class PrinterDriver:
     RASTER_STRIP_ROWS = 24
     RASTER_GUARD_BYTES = 4
     SERIAL_WRITE_CHUNK_BYTES = 128
+
+    # The QR204 has a small receive buffer and no flow control of its own. A
+    # 9600 baud link (960 bytes/s) is slower than the print head even on dense
+    # rows, so it never overruns the buffer. A faster link can: dense rows such
+    # as a crossword grid slow the head, the buffer fills, bytes are dropped and
+    # the rest of the receipt prints as garbage. Cap the average bitmap
+    # throughput at what a 9600 baud link delivered. The cap only applies when
+    # the link is faster than the cap. Raise it with
+    # PC1_SERIAL_MAX_BYTES_PER_SECOND to print faster, or set 0 to disable it.
+    SERIAL_MAX_BYTES_PER_SECOND = _float_env("PC1_SERIAL_MAX_BYTES_PER_SECOND", 960.0)
 
     # DTR is useful when it asserts, but the deployed wiring does not make it a
     # reliable prerequisite for progress. Wait for a stable assertion, then
@@ -1218,9 +1237,18 @@ class PrinterDriver:
             "busy_wait_events": 0,
             "busy_wait_seconds": 0.0,
             "busy_pin_timed_out": False,
+            "pace_wait_seconds": 0.0,
             "cancelled": False,
         }
         consult_busy_pin = True
+
+        # Pace only when the serial link can outrun the configured cap.
+        pace_rate = self.SERIAL_MAX_BYTES_PER_SECOND
+        link_bytes_per_second = getattr(self, "baudrate", 9600) / 10.0
+        if pace_rate <= 0 or pace_rate >= link_bytes_per_second:
+            pace_rate = 0.0
+        pace_started = time.monotonic()
+        pace_bytes = 0
         active_strip = 0
 
         try:
@@ -1253,8 +1281,20 @@ class PrinterDriver:
                                 waited_seconds=round(waited, 3),
                             )
 
+                    if pace_rate:
+                        # Hold the next chunk until the bytes already sent
+                        # have had time to print at the capped rate.
+                        pace_delay = (
+                            pace_started + pace_bytes / pace_rate - time.monotonic()
+                        )
+                        if pace_delay > 0:
+                            time.sleep(pace_delay)
+                            stats["pace_wait_seconds"] += pace_delay
+
                     chunk = command[offset : offset + self.SERIAL_WRITE_CHUNK_BYTES]
-                    stats["bytes_sent"] += self._write(chunk)
+                    written = self._write(chunk)
+                    pace_bytes += written
+                    stats["bytes_sent"] += written
 
                 # This waits for the host UART only, not printer mechanical idle.
                 self._flush_serial()
@@ -1277,7 +1317,7 @@ class PrinterDriver:
 
             logger.info(
                 "Bitmap transport complete: %dx%d strips=%d bytes=%d elapsed=%.3fs "
-                "busy_waits=%d busy_seconds=%.3f",
+                "busy_waits=%d busy_seconds=%.3f pace_seconds=%.3f",
                 width,
                 height,
                 stats["strips"],
@@ -1285,6 +1325,7 @@ class PrinterDriver:
                 stats["elapsed_seconds"],
                 stats["busy_wait_events"],
                 stats["busy_wait_seconds"],
+                stats["pace_wait_seconds"],
             )
             return stats
         except Exception as exc:
