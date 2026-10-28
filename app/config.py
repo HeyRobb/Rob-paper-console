@@ -8,7 +8,20 @@ import logging
 
 # Constants
 PRINTER_WIDTH = 42
-DEFAULT_CUTTER_FEED_LINES = 7
+
+
+def _int_env(name: str, default: int) -> int:
+    """Read a non-negative int from the environment, falling back on bad input."""
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+# Blank lines (24 dots each) fed after a print so the text clears the cutter.
+# Override per device with PC1_CUTTER_FEED_LINES; 0 feeds nothing extra.
+DEFAULT_CUTTER_FEED_LINES = _int_env("PC1_CUTTER_FEED_LINES", 7)
 # UART speed for the TTL thermal printer. The printer itself must be set to the
 # same rate. Override per device with the PC1_PRINTER_BAUDRATE environment
 # variable (for example 9600 for printers that only support the older rate).

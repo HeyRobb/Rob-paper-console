@@ -264,3 +264,29 @@ def test_dense_strips_are_not_slowed_on_a_9600_baud_link(monkeypatch):
     driver._send_bitmap(Image.new("1", (384, 48), 0))
 
     assert clock.sleeps == []
+
+
+def _feed_bytes(monkeypatch, mode, lines):
+    monkeypatch.setattr(PrinterDriver, "FEED_COMMAND", mode)
+    fake = _FakeSerial()
+    driver = _make_driver(fake)
+    driver.feed_direct(lines)
+    return bytes(fake.written)
+
+
+def test_feed_direct_both_sends_esc_d_and_esc_j(monkeypatch):
+    sent = _feed_bytes(monkeypatch, "both", 2)
+    assert b"\x1b\x64\x02" in sent
+    assert b"\x1b\x4a\x30" in sent
+
+
+def test_feed_direct_esc_j_only_feeds_once(monkeypatch):
+    sent = _feed_bytes(monkeypatch, "esc_j", 2)
+    assert b"\x1b\x64" not in sent
+    assert b"\x1b\x4a\x30" in sent
+
+
+def test_feed_direct_esc_d_only_feeds_once(monkeypatch):
+    sent = _feed_bytes(monkeypatch, "esc_d", 2)
+    assert b"\x1b\x64\x02" in sent
+    assert b"\x1b\x4a" not in sent

@@ -119,6 +119,14 @@ class PrinterDriver:
     # dense areas faster. 0 disables the density adjustment.
     SERIAL_DARK_ROW_SECONDS = _float_env("PC1_SERIAL_DARK_ROW_SECONDS", 0.07)
 
+    # Which command feeds paper after a print. "both" (default) sends ESC d and
+    # ESC J for compatibility, which feeds roughly twice the requested length.
+    # Set PC1_FEED_COMMAND to "esc_j" (exact dots) or "esc_d" (printer line
+    # spacing) to feed once and waste less paper.
+    FEED_COMMAND = os.environ.get("PC1_FEED_COMMAND", "both").strip().lower()
+    if FEED_COMMAND not in ("both", "esc_d", "esc_j"):
+        FEED_COMMAND = "both"
+
     # DTR is useful when it asserts, but the deployed wiring does not make it a
     # reliable prerequisite for progress. Wait for a stable assertion, then
     # stop consulting it for the current receipt if it remains high too long.
@@ -1910,18 +1918,23 @@ class PrinterDriver:
             # Small delay to let bitmap finish processing
             time.sleep(0.05)
 
-            # ESC d n - Print and feed n lines (0x1B 0x64 n)
-            # This command works after bitmap printing because it's a "print and feed" command
-            # Even with no data to print, it should still feed the paper
-            feed_amount = min(lines, 255)
-            self._write(b"\x1b\x64" + bytes([feed_amount]))
+            mode = self.FEED_COMMAND
+            if mode in ("both", "esc_d"):
+                # ESC d n - Print and feed n lines (0x1B 0x64 n). The line
+                # height is whatever the printer's line spacing is set to, so
+                # this can be longer than 24 dots per line.
+                feed_amount = min(lines, 255)
+                self._write(b"\x1b\x64" + bytes([feed_amount]))
 
-            # Backup: Also send ESC J (feed by dots) in case ESC d doesn't work
-            dots = lines * 24
-            while dots > 0:
-                chunk = min(dots, 255)
-                self._write(b"\x1b\x4a" + bytes([chunk]))
-                dots -= chunk
+            if mode in ("both", "esc_j"):
+                # ESC J n - feed by dots, exactly 24 dots per requested line.
+                # In "both" mode this is a backup in case ESC d does nothing,
+                # but it also means the paper feeds twice.
+                dots = lines * 24
+                while dots > 0:
+                    chunk = min(dots, 255)
+                    self._write(b"\x1b\x4a" + bytes([chunk]))
+                    dots -= chunk
 
             # Flush to ensure all data is sent
             if self.ser and self.ser.is_open:
