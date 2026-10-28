@@ -9,6 +9,10 @@ import logging
 # Constants
 PRINTER_WIDTH = 42
 DEFAULT_CUTTER_FEED_LINES = 7
+# UART speed for the TTL thermal printer. The printer itself must be set to the
+# same rate. Override per device with the PC1_PRINTER_BAUDRATE environment
+# variable (for example 9600 for printers that only support the older rate).
+DEFAULT_PRINTER_BAUDRATE = 115200
 logger = logging.getLogger(__name__)
 _warned_non_posix_sensitive_config = False
 _warned_non_posix_sensitive_data = False

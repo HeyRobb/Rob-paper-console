@@ -6,9 +6,29 @@ import time
 from collections import deque
 from typing import Callable, Deque, Optional, Tuple
 
-from app.config import PRINTER_WIDTH
+from app.config import DEFAULT_PRINTER_BAUDRATE, PRINTER_WIDTH
 
 logger = logging.getLogger(__name__)
+
+
+def _baudrate_env(name: str, default: int) -> int:
+    """Read a positive integer baud rate from the environment.
+
+    Falls back to ``default`` (with a warning) when the variable is set to
+    something that is not a positive whole number.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value <= 0:
+        logger.warning("Ignoring invalid %s=%r; using %d baud", name, raw, default)
+        return default
+    return value
+
 
 # Auto-detect platform and use appropriate drivers
 _is_raspberry_pi = platform.system() == "Linux" and os.path.exists(
@@ -43,7 +63,8 @@ else:
     from app.drivers.button_mock import ButtonDriver
 
 # Global Hardware Instances
-printer = PrinterDriver(width=PRINTER_WIDTH)
+PRINTER_BAUDRATE = _baudrate_env("PC1_PRINTER_BAUDRATE", DEFAULT_PRINTER_BAUDRATE)
+printer = PrinterDriver(width=PRINTER_WIDTH, baudrate=PRINTER_BAUDRATE)
 dial = DialDriver()
 
 # Main Interface Button (Print / WiFi Setup / Reset) - GPIO 25 (Pin 22)

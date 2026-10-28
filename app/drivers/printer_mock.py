@@ -1,7 +1,7 @@
 from datetime import datetime
 import threading
 
-from app.config import DEFAULT_CUTTER_FEED_LINES
+from app.config import DEFAULT_CUTTER_FEED_LINES, DEFAULT_PRINTER_BAUDRATE
 
 class PrinterDriver:
     # Fixed spacing constants (match serial driver)
@@ -15,7 +15,7 @@ class PrinterDriver:
         self,
         width: int = 42,  # Characters per line
         port: str = None,
-        baudrate: int = 9600,
+        baudrate: int = DEFAULT_PRINTER_BAUDRATE,
     ):
         self.width = width
         self.lines_printed = 0

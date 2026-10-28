@@ -104,7 +104,7 @@ class PrinterDriver:
         self,
         width: int = 42,  # Characters per line
         port: Optional[str] = None,
-        baudrate: int = 9600,  # QR204 only supports 9600
+        baudrate: int = app.config.DEFAULT_PRINTER_BAUDRATE,  # printer must match
         init_serial: bool = True,
     ):
         self.width = width

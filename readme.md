@@ -257,6 +257,7 @@ For production deployments, configure these environment variables:
 * **`PC1_LOG_LEVEL`**: Backend log level (default: `WARNING` on device builds).
 * **`UVICORN_LOG_LEVEL`**: Uvicorn log level for `run.sh` (default: `warning`).
 * **`UVICORN_ACCESS_LOG`**: Set to `1` to enable HTTP access logs (default: `0` for lower log volume).
+* **`PC1_PRINTER_BAUDRATE`**: Serial speed used to talk to the thermal printer (default: `115200`). The printer must be set to the same rate. On a device, run `sudo systemctl edit pc-1.service`, add `[Service]` and `Environment=PC1_PRINTER_BAUDRATE=9600`, then `sudo systemctl restart pc-1.service`.
 
 ### Production Release Artifacts
 
@@ -478,6 +479,7 @@ Legend: `[X]` = Used, `[ ]` = Empty. The header is 2 pins wide.
 1. Wire according to table above
 2. **Serial port is automatically configured** by `scripts/setup_pi.sh` (disables console, enables hardware)
 3. Device appears as `/dev/serial0` after setup
+4. **Baud rate:** The app talks to the printer at **115200 baud** by default, so the printer itself must be configured for 115200. For a printer that only supports 9600, set `PC1_PRINTER_BAUDRATE=9600` (see Environment Variables).
 
 ### Power Supply
 
