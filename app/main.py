@@ -1063,6 +1063,50 @@ def _get_welcome_marker_path() -> str:
     return os.path.join(base_dir, ".welcome_printed")
 
 
+def _first_usable_ipv4(candidates) -> Optional[str]:
+    """Return the first IPv4 address that is neither loopback nor link-local."""
+    import ipaddress
+
+    for text in candidates:
+        try:
+            addr = ipaddress.ip_address(text)
+        except ValueError:
+            continue
+        if addr.version == 4 and not addr.is_loopback and not addr.is_link_local:
+            return str(addr)
+    return None
+
+
+def get_startup_ip_address(
+    timeout_seconds: float = 15.0, poll_seconds: float = 1.0
+) -> Optional[str]:
+    """Find the device's IPv4 address, waiting briefly for the network at boot.
+
+    Uses `hostname -I`, so it works on wired and WiFi links (and in AP mode,
+    where it reports the access point's address). Returns None if no address
+    appears within the timeout. Blocking: call it from a worker thread.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            result = subprocess.run(
+                ["hostname", "-I"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            ip_address = _first_usable_ipv4(result.stdout.split())
+        except Exception:
+            logger.debug("IP address lookup failed", exc_info=True)
+            ip_address = None
+        if ip_address:
+            return ip_address
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_seconds)
+
+
 async def check_first_boot():
     """Check if this is first boot and print welcome message.
     Runs blocking printer operations in a thread pool to avoid blocking the event loop.
@@ -1097,6 +1141,10 @@ async def check_first_boot():
                 from app.config import format_print_datetime
 
                 printer.print_bold(format_print_datetime())
+
+                # The network can still be coming up this early in boot.
+                ip_address = get_startup_ip_address()
+                printer.print_body(f"IP: {ip_address or 'no network'}")
 
                 printer.print_line()
 
