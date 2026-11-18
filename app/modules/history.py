@@ -1,13 +1,50 @@
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, Iterable, List
 from pathlib import Path
 from datetime import date, datetime
 from app.utils import wrap_text, wrap_text_pixels
 from app.config import current_date
+from app.history_rules import GRIM_PATTERN
 from PIL import Image, ImageDraw
 from app.module_registry import register_module
 
-LOCAL_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "history.json"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+# Classic "YEAR: text" history (every kind of event, unfiltered).
+LOCAL_DB_PATH = DATA_DIR / "history.json"
+
+# Curated/tagged pop-culture, tech and gaming milestones, built offline by
+# scripts/build_history_data.py. Shape: {"events": {month: {day: [entry]}}}
+# where entry = {"y": year, "t": text, "c": category, "s": score}.
+THEMED_DB_PATH = DATA_DIR / "history_themed.json"
+
+THEME_POP = "Pop culture & tech"
+THEME_CLASSIC = "Classic history"
+THEMES = [THEME_POP, THEME_CLASSIC]
+DEFAULT_THEME = THEME_POP
+
+# Genres inside the Pop culture & tech theme: (config key, category stored in
+# history_themed.json, checkbox title shown in settings).
+#
+# These are "skip" toggles on purpose: the settings form shows an unset
+# checkbox as unchecked (it ignores schema defaults), so an unchecked box has to
+# mean "include this genre" or existing modules would look different from how
+# they behave.
+GENRES = [
+    ("exclude_film_tv", "film_tv", "Skip film & TV"),
+    ("exclude_music", "music", "Skip music"),
+    ("exclude_games", "games", "Skip video games"),
+    ("exclude_tech", "tech", "Skip tech & internet"),
+    ("exclude_culture", "culture", "Skip comics, toys & theme parks"),
+    ("exclude_birthdays", "birthday", "Skip famous birthdays"),
+]
+ALL_GENRE_CATEGORIES = frozenset(category for _, category, _ in GENRES)
+
+# Used only when a themed day has no entries: skip classic entries that are
+# about wars, disasters, deaths, treaties and similar.
+_GRIM_PATTERN = GRIM_PATTERN
+
+_themed_cache: Dict[str, Any] = {"key": None, "data": None}
 
 
 def get_events_for_date(target_date: date) -> List[str]:
@@ -35,6 +72,103 @@ def get_events_for_today() -> List[str]:
     return get_events_for_date(current_date())
 
 
+def _load_themed_db() -> Dict[str, Any] | None:
+    """Load the themed database (month -> day -> entries), cached by mtime.
+
+    Returns None when the file is missing or unreadable so callers can fall
+    back to the classic database instead of printing an error receipt.
+    """
+    path = THEMED_DB_PATH
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return None
+
+    if _themed_cache["key"] == key:
+        return _themed_cache["data"]
+
+    data = None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        events = raw.get("events") if isinstance(raw, dict) else None
+        if isinstance(events, dict):
+            data = events
+    except (OSError, ValueError):
+        data = None
+
+    _themed_cache["key"] = key
+    _themed_cache["data"] = data
+    return data
+
+
+def get_themed_events_for_date(
+    target_date: date,
+    theme: str = DEFAULT_THEME,
+    categories: Iterable[str] | None = None,
+) -> List[str]:
+    """Themed events for a date as "YEAR: text" strings, best-scored first.
+
+    `categories` limits which genres are used (default: all of them).
+    """
+    if theme != THEME_POP:
+        return []
+    categories = ALL_GENRE_CATEGORIES if categories is None else frozenset(categories)
+    if not categories:
+        return []
+
+    db = _load_themed_db()
+    if not db:
+        return []
+
+    day_entries = db.get(str(target_date.month), {}).get(str(target_date.day), [])
+    picked = [
+        e
+        for e in day_entries
+        if isinstance(e, dict) and e.get("c") in categories and e.get("t")
+    ]
+    picked.sort(key=lambda e: (-(e.get("s") or 0), -(e.get("y") or 0)))
+
+    return [f"{e['y']}: {e['t']}" if e.get("y") else e["t"] for e in picked]
+
+
+def get_fallback_events_for_date(target_date: date) -> List[str]:
+    """Classic events for a date with wars/disasters/politics filtered out.
+
+    If every classic entry for the day is filtered out, returns them all so
+    the receipt is never empty just because of the filter.
+    """
+    classic = get_events_for_date(target_date)
+    calm = [e for e in classic if not _GRIM_PATTERN.search(e)]
+    return calm or classic
+
+
+def get_events_for_theme(
+    target_date: date,
+    theme: str = DEFAULT_THEME,
+    categories: Iterable[str] | None = None,
+) -> List[str]:
+    """Events for a date under the chosen theme, falling back to calmer classic history."""
+    if theme == THEME_CLASSIC:
+        return get_events_for_date(target_date)
+
+    themed = get_themed_events_for_date(target_date, theme, categories)
+    if themed:
+        return themed
+    return get_fallback_events_for_date(target_date)
+
+
+def _resolve_theme(config: Dict[str, Any] | None) -> str:
+    theme = (config or {}).get("theme")
+    return theme if theme in THEMES else DEFAULT_THEME
+
+
+def _resolve_categories(config: Dict[str, Any] | None) -> frozenset:
+    """Genres still included after applying the "Skip ..." toggles."""
+    cfg = config or {}
+    return frozenset(category for key, category, _ in GENRES if not cfg.get(key))
+
+
 def _resolve_reference_date(config: Dict[str, Any] | None) -> date:
     if not config:
         return current_date()
@@ -58,14 +192,28 @@ def _resolve_reference_date(config: Dict[str, Any] | None) -> date:
 @register_module(
     type_id="history",
     label="On This Day",
-    description="Random historical events that happened on today's date",
+    description="Random pop-culture, tech and gaming milestones (or classic history) from today's date",
     icon="hourglass",
     offline=True,
     category="content",
     config_schema={
         "type": "object",
+        "description": (
+            "The skip toggles apply to the Pop culture & tech theme. Days with "
+            "nothing left for your chosen genres print calmer classic history."
+        ),
         "properties": {
-            "count": {"type": "integer", "title": "Number of Events", "default": 1}
+            "theme": {
+                "type": "string",
+                "title": "Theme",
+                "enum": THEMES,
+                "default": DEFAULT_THEME,
+            },
+            "count": {"type": "integer", "title": "Number of Events", "default": 1},
+            **{
+                key: {"type": "boolean", "title": title, "default": False}
+                for key, _category, title in GENRES
+            },
         }
     }
 )
@@ -75,7 +223,9 @@ def format_history_receipt(
     """Prints 'On This Day' historical events."""
 
     target_date = _resolve_reference_date(config)
-    events = get_events_for_date(target_date)
+    events = get_events_for_theme(
+        target_date, _resolve_theme(config), _resolve_categories(config)
+    )
 
     # Filter/Select events
     count = 1

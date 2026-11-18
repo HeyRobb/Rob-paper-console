@@ -96,3 +96,6 @@ deploy.sh
 
 # Deployment configuration (contains Pi connection details)
 .deploy_config
+
+# History data builder: cached Wikidata responses (regenerable, large)
+scripts/history_sources/wikidata_cache/

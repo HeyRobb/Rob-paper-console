@@ -291,6 +291,7 @@ paper-console/
 │   ├── device_password.py      # Unified device password storage/loading
 │   ├── factory_reset.py        # Factory reset helpers and welcome marker reset
 │   ├── hardware.py             # Printer + dial/button singletons
+│   ├── history_rules.py        # Keyword rules for tagging/filtering On This Day entries
 │   ├── location_lookup.py      # City/timezone lookup helpers
 │   ├── module_registry.py      # @register_module metadata and validation
 │   ├── selection_mode.py       # Dial-driven interactive selection flows
@@ -392,7 +393,9 @@ paper-console/
 
 **Journal Prompt:** Offline prompt library; random prompt per print.
 
-**History:** Offline “on this day” events; optional event count in config.
+**History:** Offline “on this day” events. The **Theme** setting picks the flavor: *Pop culture & tech* (default: film/TV, music, video games, tech and internet milestones, comics/toys/theme parks, famous birthdays) or *Classic history* (the original unfiltered list). Under Pop culture & tech, six **Skip ...** checkboxes (film & TV, music, video games, tech & internet, comics/toys/theme parks, famous birthdays) turn individual genres off; they are "skip" toggles because the settings form shows an unset checkbox as unchecked. If a day has nothing left for the chosen genres it falls back to calmer classic entries (no wars, disasters or politics). Optional event count in config.
+
+Themed content lives in `app/data/history_themed.json`, built by `scripts/build_history_data.py` from the classic `history.json` (keyword-tagged), a hand-checked list in `scripts/history_sources/curated_milestones.json`, and optionally Wikidata (films, video games and famous births ranked by Wikipedia coverage). Rebuild offline with `./.venv/bin/python scripts/build_history_data.py`. To add Wikidata, run on a machine with normal internet access: `... --check-ids --contact you@example.com`, then `... --fetch-wikidata --contact you@example.com` (responses are cached in `scripts/history_sources/wikidata_cache/`, which is git-ignored and excluded from releases).
 
 **System Monitor:** Hostname, IP, WiFi, disk/memory bars, uptime, load, CPU temp (where available).
 

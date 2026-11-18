@@ -309,7 +309,7 @@ def test_history_reference_date_uses_target_day(monkeypatch, capsys):
 
     history_module.format_history_receipt(
         PrinterDriver(),
-        {"reference_date": "1969-07-20", "count": 2},
+        {"reference_date": "1969-07-20", "count": 2, "theme": "Classic history"},
         "On This Day",
     )
 

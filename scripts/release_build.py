@@ -45,11 +45,12 @@ INCLUDE_PATHS = [
 ]
 
 # Exclusions within included directories.
-EXCLUDED_DIRS = {".git", ".github", "__pycache__", ".pytest_cache", ".mypy_cache", ".venv", "artifacts"}
+EXCLUDED_DIRS = {".git", ".github", "__pycache__", ".pytest_cache", ".mypy_cache", ".venv", "artifacts", "wikidata_cache"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 REQUIRED_RUNTIME_PATHS = [
     "app/data/quotes.json",
     "app/data/history.json",
+    "app/data/history_themed.json",
     "app/data/geonames_cities.csv",
     "app/data/journal_prompts.json",
     "app/data/adventure_story.json",
