@@ -3,16 +3,17 @@
 Nothing from the site is stored in this repository. When the receipt prints, the
 device downloads today's holiday list, then one page for each holiday it is going
 to print, and keeps the parsed result in memory for the rest of the day so a
-second print costs no requests at all. The optional "Upcoming Days" section also
-reads the site's page for each of the next few dates (see load_upcoming_days).
+second print costs no requests at all. The separate Upcoming Days module
+(upcoming_days.py) shares this file's fetching and parsing, and adds the site's page
+for each of the next few dates (see load_upcoming_days).
 
 Being a good guest matters here, so the fetching is deliberately modest:
   * only nationaltoday.com pages are requested, and never the paths its
     robots.txt disallows (/resources/, /wp-admin/);
   * requests are sequential, identify themselves, and are time-boxed so a slow
     connection cannot stall the printer for long;
-  * at most 1 + MAX_COUNT pages (plus UPCOMING_LOOKAHEAD_DAYS date pages when
-    "Upcoming Days" is on) are fetched per day, however often it prints.
+  * at most 1 + MAX_COUNT pages are fetched per day, however often it prints
+    (the Upcoming Days module adds at most upcoming_lookahead() date pages).
 
 The parsers key off headings ("All holidays today", "How To Celebrate ...")
 instead of CSS classes, which change far more often. When the list heading
@@ -55,13 +56,9 @@ MAX_COUNT = 7
 DEFAULT_IDEAS = 2
 MAX_IDEAS = 10
 
-# "Upcoming Days": the next few dates' arts, food and fun holidays, name and category under a date heading.
-MIN_UPCOMING = 3  # dates listed
-DEFAULT_UPCOMING = 3
-MAX_UPCOMING = 5
-DEFAULT_UPCOMING_PER_DAY = 2  # holidays listed under each date
-MAX_UPCOMING_PER_DAY = 5
-UPCOMING_LOOKAHEAD_DAYS = 7  # date pages looked at, tomorrow onwards, to find the dates to list
+# Used by the Upcoming Days module: the next few dates' arts, food and fun holidays.
+UPCOMING_LOOKAHEAD_DAYS = 7  # date pages looked at, tomorrow onwards, to find the dates to list...
+UPCOMING_SPARE_DAYS = 3  # ...or this many more than the dates asked for, if that is larger
 UPCOMING_BUDGET_SECONDS = 20
 UPCOMING_CATEGORIES = ("arts & entertainment", "food & beverage", "fun")
 MONTH_SLUGS = (
@@ -413,17 +410,22 @@ def load_national_days(
     return results
 
 
+def upcoming_lookahead(days: int) -> int:
+    """How many dates load_upcoming_days will look at to find `days` dates worth listing."""
+    return max(UPCOMING_LOOKAHEAD_DAYS, days + UPCOMING_SPARE_DAYS)
+
+
 def load_upcoming_days(
     today: date,
     days: int,
     per_day: int,
     skip_categories: frozenset = frozenset(),
-    lookahead: int = UPCOMING_LOOKAHEAD_DAYS,
+    lookahead: Optional[int] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """The next dates with arts, food or fun holidays: [{"date", "holidays": [{"name", "url", "category"}]}].
 
     Looks at the site's page for tomorrow, then the day after, and so on (at most
-    `lookahead` dates), until `days` dates that have a matching holiday are found, so
+    `lookahead` dates, see upcoming_lookahead), until `days` dates that have a matching holiday are found, so
     a date with nothing fun is simply left out. Under each date go at most `per_day`
     holidays: arts before food before fun, then the site's order. Categories ticked in
     the "Skip ..." checkboxes are left out. Each date page is kept in memory until that
@@ -436,6 +438,8 @@ def load_upcoming_days(
     allowed = {c for c in UPCOMING_CATEGORIES if c not in skip_categories}
     if not allowed:
         return []
+    if lookahead is None:
+        lookahead = upcoming_lookahead(days)
 
     deadline = time.monotonic() + UPCOMING_BUDGET_SECONDS
     with _cache_lock:
@@ -497,35 +501,6 @@ def _day_line(target_date: date, category: str | None) -> str:
     return " - ".join(part for part in parts if part)
 
 
-def _upcoming_heading(day: date) -> str:
-    """Bold line above each upcoming date's holidays, e.g. "Fri, Nov 20"."""
-    return f"{day:%a}, {day:%b} {day.day}"
-
-
-def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
-    """Prints the "Upcoming Days" section; True when it printed anything from the site."""
-    days = _resolve_int(config, "upcoming_count", DEFAULT_UPCOMING, MAX_UPCOMING, MIN_UPCOMING)
-    per_day = _resolve_int(config, "upcoming_per_day", DEFAULT_UPCOMING_PER_DAY, MAX_UPCOMING_PER_DAY)
-    upcoming = load_upcoming_days(target_date, days, per_day, _skipped_categories(config))
-
-    printer.feed(1)  # a gap, a dashed line and a bold title set the section apart from today's list
-    printer.print_line()
-    printer.print_bold("UPCOMING DAYS")
-    if upcoming is None:
-        printer.print_body("Couldn't load upcoming days.")
-        return False
-    if not upcoming:
-        printer.print_body("Nothing matching in the")
-        printer.print_body(f"next {UPCOMING_LOOKAHEAD_DAYS} days.")
-        return False
-    for group in upcoming:
-        printer.print_line()  # a rule above every date, so the dates stand out at a glance
-        printer.print_bold(_upcoming_heading(group["date"]))
-        for holiday in group["holidays"]:
-            printer.print_body(holiday["name"])  # name only: the section is already arts, food and fun
-    return True
-
-
 @register_module(
     type_id="national_days",
     label="National Days",
@@ -536,26 +511,24 @@ def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
     config_schema={
         "type": "object",
         "description": (
-            "The top of the receipt lists today's national days with ways to celebrate them "
-            "(the \"Today\" settings). Turn on the Upcoming Days section for a short list of the "
-            "next few dates (the \"Upcoming\" settings). Arts, food and fun days print first, then "
-            "animal, special interest, relationship, cultural, appreciation and religious days, then "
-            "health, cause and federal days, unless you keep the site's order. Tick a \"Skip\" box to "
-            "leave that kind of day out of both lists; days the site doesn't label with a category "
-            "are always kept in today's list."
+            "Arts, food and fun days print first, then animal, special interest, relationship, "
+            "cultural, appreciation and religious days, then health, cause and federal days, "
+            "unless you keep the site's order. Tick a \"Skip\" box to leave that kind of day out; "
+            "days the site doesn't label with a category are always kept. For the days coming up "
+            "next, add the Upcoming Days module."
         ),
         "properties": {
             "count": {
                 "type": "integer",
-                "title": "Today: Days to Print",
-                "description": "How many of today's national days print at the top, each with its ideas.",
+                "title": "Days to Print",
+                "description": "How many of today's national days to print, each with its ideas.",
                 "default": DEFAULT_COUNT,
                 "minimum": 1,
                 "maximum": MAX_COUNT,
             },
             "ideas": {
                 "type": "integer",
-                "title": "Today: Ideas per Day",
+                "title": "Ideas per Day",
                 "description": "Most days list about 3 ideas, so a higher number rarely prints more.",
                 "default": DEFAULT_IDEAS,
                 "minimum": 1,
@@ -563,32 +536,8 @@ def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
             },
             "keep_page_order": {
                 "type": "boolean",
-                "title": "Today: Keep the site's order (otherwise arts, food and fun days print first)",
+                "title": "Keep the site's order (otherwise arts, food and fun days print first)",
                 "default": False,
-            },
-            "show_upcoming": {
-                "type": "boolean",
-                "title": "Upcoming: Add an Upcoming Days section (arts, food and fun only)",
-                "default": False,
-            },
-            "upcoming_count": {
-                "type": "integer",
-                "title": "Upcoming: Dates to List",
-                "description": (
-                    "How many future dates the Upcoming Days section lists. A date with no arts, "
-                    f"food or fun day is left out; looks up to {UPCOMING_LOOKAHEAD_DAYS} days ahead."
-                ),
-                "default": DEFAULT_UPCOMING,
-                "minimum": MIN_UPCOMING,
-                "maximum": MAX_UPCOMING,
-            },
-            "upcoming_per_day": {
-                "type": "integer",
-                "title": "Upcoming: Days per Date",
-                "description": "The most national days listed under each upcoming date (arts first, then food, then fun).",
-                "default": DEFAULT_UPCOMING_PER_DAY,
-                "minimum": 1,
-                "maximum": MAX_UPCOMING_PER_DAY,
             },
             **{key: {"type": "boolean", "title": title, "default": False} for _label, key, title in CATEGORIES},
         },
@@ -615,27 +564,21 @@ def format_national_days_receipt(printer, config: Dict[str, Any] = None, module_
         printer.print_body("internet connection.")
         return
 
-    printed_site_content = False
     if not days:
         printer.print_body("No national days today")
         printer.print_body("match your settings.")
-    else:
-        printed_site_content = True
-        for index, day in enumerate(days):
-            if index:
-                printer.feed(1)
-            printer.print_bold(day["name"])
-            printer.print_caption(_day_line(target_date, day["category"]))
-            if not day["ideas"]:
-                continue
-            printer.print_caption("Ways to celebrate:")
-            for idea in day["ideas"]:
-                printer.print_body(f"- {idea['title']}")
-
-    if config.get("show_upcoming"):
-        printed_site_content = _print_upcoming(printer, config, target_date) or printed_site_content
-
-    if not printed_site_content:
         return
+
+    for index, day in enumerate(days):
+        if index:
+            printer.feed(1)
+        printer.print_bold(day["name"])
+        printer.print_caption(_day_line(target_date, day["category"]))
+        if not day["ideas"]:
+            continue
+        printer.print_caption("Ways to celebrate:")
+        for idea in day["ideas"]:
+            printer.print_body(f"- {idea['title']}")
+
     printer.print_line()
     printer.print_caption(SOURCE_CREDIT)

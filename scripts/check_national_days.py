@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Check the National Days module against the live nationaltoday.com pages.
+"""Check the National Days and Upcoming Days modules against the live nationaltoday.com pages.
 
-The module scrapes nationaltoday.com at print time, so the one thing unit tests
+Both modules scrape nationaltoday.com at print time, so the one thing unit tests
 cannot prove is that the parsers still understand the real pages. Run this on a
 machine with normal internet access (a laptop, or the device itself) after
 installing, and whenever the receipt starts saying it "couldn't load" the days:
 
     ./.venv/bin/python scripts/check_national_days.py
     ./.venv/bin/python scripts/check_national_days.py --count 5 --ideas 4
-    ./.venv/bin/python scripts/check_national_days.py --upcoming 5
+    ./.venv/bin/python scripts/check_national_days.py --upcoming 7
     ./.venv/bin/python scripts/check_national_days.py --save-html /tmp/nt
 
 It runs the module's real fetch and parse path, lists every holiday it found for
 today, and shows the receipt as plain text. --save-html also keeps the raw pages
 so a parsing problem can be inspected without fetching again. At most 1 + count
-pages are requested, the same as one print. --upcoming N (3 to 5) also tries the
-"Upcoming Days" section, which lists N upcoming dates by reading the site's page
-for tomorrow, the day after, and so on (at most a week of them).
+pages are requested, the same as one print. --upcoming N (3 to 7) also tries the
+Upcoming Days module, which lists N upcoming dates by reading the site's page for
+tomorrow, the day after, and so on (a few more dates than N at most), and shows its
+receipt too.
 
 Exit status: 0 = receipt would print, 1 = a page could not be fetched,
 2 = fetched but the holiday list could not be found in it,
@@ -42,6 +43,7 @@ platform.system = lambda: "Darwin"
 from bs4 import BeautifulSoup  # noqa: E402
 
 from app.modules import national_days as nd  # noqa: E402
+from app.modules import upcoming_days as ud  # noqa: E402
 
 _clean = nd._clean
 
@@ -84,18 +86,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--upcoming", type=int, default=0, metavar="N",
-        help=f"also show the Upcoming Days section with N dates ({nd.MIN_UPCOMING} to {nd.MAX_UPCOMING})",
+        help=f"also check the Upcoming Days module, listing N dates ({ud.MIN_DATES} to {ud.MAX_DATES})",
     )
     parser.add_argument(
-        "--upcoming-per-day", type=int, default=nd.DEFAULT_UPCOMING_PER_DAY, metavar="M",
-        help="most days listed under each upcoming date, 1 to %d (default %%(default)s)" % nd.MAX_UPCOMING_PER_DAY,
+        "--upcoming-per-day", type=int, default=ud.DEFAULT_PER_DATE, metavar="M",
+        help="most days listed under each upcoming date, 1 to %d (default %%(default)s)" % ud.MAX_PER_DATE,
     )
     parser.add_argument("--save-html", metavar="DIR", help="also save each fetched page here")
     args = parser.parse_args()
-    if args.upcoming and not nd.MIN_UPCOMING <= args.upcoming <= nd.MAX_UPCOMING:
-        parser.error(f"--upcoming must be between {nd.MIN_UPCOMING} and {nd.MAX_UPCOMING}")
-    if not 1 <= args.upcoming_per_day <= nd.MAX_UPCOMING_PER_DAY:
-        parser.error(f"--upcoming-per-day must be between 1 and {nd.MAX_UPCOMING_PER_DAY}")
+    if args.upcoming and not ud.MIN_DATES <= args.upcoming <= ud.MAX_DATES:
+        parser.error(f"--upcoming must be between {ud.MIN_DATES} and {ud.MAX_DATES}")
+    if not 1 <= args.upcoming_per_day <= ud.MAX_PER_DATE:
+        parser.error(f"--upcoming-per-day must be between 1 and {ud.MAX_PER_DATE}")
 
     save_dir = Path(args.save_html) if args.save_html else None
     if save_dir:
@@ -163,31 +165,26 @@ def main() -> int:
         upcoming_started = time.monotonic()
         upcoming = nd.load_upcoming_days(day, args.upcoming, args.upcoming_per_day, frozenset(args.skip))
         upcoming_seconds = time.monotonic() - upcoming_started
-        print(f"\nUpcoming dates (arts, food and fun only), found in {upcoming_seconds:.1f} s:")
+        print(f"\nUpcoming Days: dates with arts, food or fun days, found in {upcoming_seconds:.1f} s:")
         if upcoming is None:
             upcoming_failed = True
             print("  none of the date pages could be loaded or understood (see the fetch lines above).")
             print("  Re-run with --save-html DIR; a date page should have an 'All holidays on <date>' heading.")
         elif not upcoming:
-            print(f"  the date pages loaded, but none of the next {nd.UPCOMING_LOOKAHEAD_DAYS} days has an arts, food or fun day.")
+            print(f"  the date pages loaded, but none of the next {nd.upcoming_lookahead(args.upcoming)} days has an arts, food or fun day.")
         for group in upcoming or []:
             for holiday in group["holidays"]:
-                print(f"  {nd._upcoming_heading(group['date']):<12} [{holiday['category']:<20}] {holiday['name']}")
+                print(f"  {ud._heading(group['date']):<12} [{holiday['category']:<20}] {holiday['name']}")
 
-    print("\nReceipt as it would print:")
-    config = {
-        "count": args.count,
-        "ideas": args.ideas,
-        "keep_page_order": args.keep_page_order,
-        "show_upcoming": bool(args.upcoming),
-        "upcoming_count": args.upcoming or nd.DEFAULT_UPCOMING,
-        "upcoming_per_day": args.upcoming_per_day,
-        **{key: True for label, key, _title in nd.CATEGORIES if label in args.skip},
-    }
+    skips = {key: True for label, key, _title in nd.CATEGORIES if label in args.skip}
+    print("\nNational Days receipt as it would print:")
+    config = {"count": args.count, "ideas": args.ideas, "keep_page_order": args.keep_page_order, **skips}
     nd.format_national_days_receipt(_TextPrinter(), config, None)
     print(f"\nTime this adds to a print: {load_seconds:.1f} s the first time each day, then none (cached).")
     if args.upcoming:
-        print(f"The Upcoming Days section adds {upcoming_seconds:.1f} s the first time each day, then none (cached).")
+        print("\nUpcoming Days receipt as it would print:")
+        ud.format_upcoming_days_receipt(_TextPrinter(), {"count": args.upcoming, "per_day": args.upcoming_per_day, **skips}, None)
+        print(f"\nTime this adds to a print: {upcoming_seconds:.1f} s the first time each day, then none (cached).")
     return 3 if upcoming_failed else 0
 
 
