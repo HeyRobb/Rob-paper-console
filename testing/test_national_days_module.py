@@ -1109,16 +1109,19 @@ def test_receipt_puts_a_bold_date_before_each_upcoming_dates_days_and_prints_onl
     assert calls[start - 2 : start] == [("feed", 1), ("line",)]
     assert calls[start:] == [
         ("bold", "UPCOMING DAYS"),
+        ("line",),
         ("bold", "Fri, Nov 20"),
         ("body", "National Peanut Butter Fudge Day"),
         ("caption", "Food & Beverage"),
         ("body", "National Absurdity Day"),
         ("caption", "Fun"),
+        ("line",),
         ("bold", "Sat, Nov 21"),
         ("body", "National Movie Day"),
         ("caption", "Arts & Entertainment"),
         ("body", "National Stuffing Day"),
         ("caption", "Food & Beverage"),
+        ("line",),
         ("bold", "Sun, Nov 22"),
         ("body", "National Cranberry Relish Day"),
         ("caption", "Food & Beverage"),
@@ -1136,7 +1139,7 @@ def test_every_upcoming_name_comes_after_the_bold_date_it_belongs_to(site):
     calls = _print({"count": 1, "show_upcoming": True, "upcoming_count": 4, "upcoming_per_day": 5})
 
     start = calls.index(("bold", "UPCOMING DAYS"))
-    assert calls[start + 1][0] == "bold"  # the first thing under the title is a date, never a name
+    assert calls[start + 1] == ("line",) and calls[start + 2][0] == "bold"  # a rule, then a date: never a name first
     names_by_date = {}
     heading = None
     for call in calls[start + 1 :]:
@@ -1268,3 +1271,20 @@ def test_each_setting_says_whether_it_is_for_todays_list_or_the_upcoming_section
     keys = list(props)
     assert keys[: len(today + upcoming)] == today + upcoming
     assert props["count"]["description"]  # says what it counts
+
+
+@pytest.mark.parametrize("dates", [3, 4, 5])
+def test_a_rule_is_printed_directly_above_every_upcoming_date(site, dates):
+    busy = {date(2026, 11, d): [(f"fun-{d}-{n}", f"Fun {d} {n}", "Fun") for n in range(2)] for d in range(20, 27)}
+    _add_date_pages(site, busy)
+
+    calls = _print({"count": 1, "show_upcoming": True, "upcoming_count": dates})
+
+    start = calls.index(("bold", "UPCOMING DAYS"))
+    section = calls[start + 1 :]
+    headings = [i for i, call in enumerate(section) if call[0] == "bold"]
+    assert len(headings) == dates
+    assert all(section[i - 1] == ("line",) for i in headings)
+    # Rules: one above each date, plus the one that closes the receipt before the credit line.
+    assert section.count(("line",)) == dates + 1
+    assert not [i for i, call in enumerate(section) if call == ("line",) and section[i - 1] == ("line",)]  # never doubled

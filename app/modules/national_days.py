@@ -519,6 +519,7 @@ def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
         printer.print_body(f"next {UPCOMING_LOOKAHEAD_DAYS} days.")
         return False
     for group in upcoming:
+        printer.print_line()  # a rule above every date, so the dates stand out at a glance
         printer.print_bold(_upcoming_heading(group["date"]))
         for holiday in group["holidays"]:
             printer.print_body(holiday["name"])
