@@ -290,3 +290,44 @@ def test_feed_direct_esc_d_only_feeds_once(monkeypatch):
     sent = _feed_bytes(monkeypatch, "esc_d", 2)
     assert b"\x1b\x64\x02" in sent
     assert b"\x1b\x4a" not in sent
+
+
+def _tuning_bytes(monkeypatch, heat, density):
+    monkeypatch.setattr(PrinterDriver, "PRINT_HEAT_TIME", heat)
+    monkeypatch.setattr(PrinterDriver, "PRINT_DENSITY", density)
+    fake = _FakeSerial()
+    driver = _make_driver(fake)
+    driver._apply_print_tuning()
+    return bytes(fake.written)
+
+
+def test_print_tuning_sends_nothing_when_unset(monkeypatch):
+    assert _tuning_bytes(monkeypatch, None, None) == b""
+
+
+def test_print_tuning_sets_heat_time_with_default_dots_and_interval(monkeypatch):
+    assert _tuning_bytes(monkeypatch, 60, None) == b"\x1b\x37\x07\x3c\x02"
+
+
+def test_print_tuning_sets_density_with_default_break_time(monkeypatch):
+    # (2 << 5) | 6 = 0x46
+    assert _tuning_bytes(monkeypatch, None, 6) == b"\x12\x23\x46"
+
+
+def test_print_tuning_reapplied_after_ascii_settings(monkeypatch):
+    monkeypatch.setattr(PrinterDriver, "PRINT_HEAT_TIME", 60)
+    monkeypatch.setattr(PrinterDriver, "PRINT_DENSITY", None)
+    fake = _FakeSerial()
+    driver = _make_driver(fake)
+    driver._apply_ascii_settings()
+    assert bytes(fake.written).endswith(b"\x1b\x37\x07\x3c\x02")
+
+
+def test_optional_int_env_rejects_bad_values(monkeypatch):
+    from app.drivers import printer_serial
+
+    for raw in ("", "abc", "-1", "300"):
+        monkeypatch.setenv("PC1_PRINT_HEAT_TIME", raw)
+        assert printer_serial._optional_int_env("PC1_PRINT_HEAT_TIME", 0, 255) is None
+    monkeypatch.setenv("PC1_PRINT_HEAT_TIME", " 60 ")
+    assert printer_serial._optional_int_env("PC1_PRINT_HEAT_TIME", 0, 255) == 60

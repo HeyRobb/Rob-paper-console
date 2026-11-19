@@ -25,6 +25,24 @@ except Exception:  # pragma: no cover - non-Pi environments
 logger = logging.getLogger(__name__)
 
 
+def _optional_int_env(name: str, minimum: int, maximum: int) -> Optional[int]:
+    """Read an int in [minimum, maximum] from the environment, or None if unset/invalid."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning("Ignoring %s=%r: not an integer", name, raw)
+        return None
+    if not minimum <= value <= maximum:
+        logger.warning(
+            "Ignoring %s=%r: must be between %d and %d", name, raw, minimum, maximum
+        )
+        return None
+    return value
+
+
 def _float_env(name: str, default: float) -> float:
     """Read a non-negative float from the environment, falling back on bad input."""
     try:
@@ -118,6 +136,16 @@ class PrinterDriver:
     # black. Raise it if garbling starts after dense areas, lower it to print
     # dense areas faster. 0 disables the density adjustment.
     SERIAL_DARK_ROW_SECONDS = _float_env("PC1_SERIAL_DARK_ROW_SECONDS", 0.07)
+
+    # Optional print-head tuning for CSN-A2 style printers (ESC 7 and DC2 #).
+    # Both are unset by default, which leaves the printer's own settings alone.
+    # PC1_PRINT_HEAT_TIME: heating time in 10 us units (0-255, firmware default
+    # 80). Lower prints lighter and lets the head feed faster through solid
+    # black; higher prints darker and slower.
+    # PC1_PRINT_DENSITY: print density 0-31 (50% + 5% per step, default 10 =
+    # 100%). Lower is lighter.
+    PRINT_HEAT_TIME = _optional_int_env("PC1_PRINT_HEAT_TIME", 0, 255)
+    PRINT_DENSITY = _optional_int_env("PC1_PRINT_DENSITY", 0, 31)
 
     # Which command feeds paper after a print. "both" (default) sends ESC d and
     # ESC J for compatibility, which feeds roughly twice the requested length.
@@ -1550,6 +1578,26 @@ class PrinterDriver:
             # Note: No ESC { rotation needed - we rotate bitmaps in software
         except Exception:
             pass
+
+        self._apply_print_tuning()
+
+    def _apply_print_tuning(self):
+        """Apply the optional heat time and density settings, if configured.
+
+        ESC @ resets the printer, so this runs after every reset.
+        """
+        try:
+            if self.PRINT_HEAT_TIME is not None:
+                # ESC 7 n1 n2 n3: max heating dots = (n1 + 1) * 8, heating time
+                # = n2 * 10 us, heating interval = n3 * 10 us. Only the heating
+                # time is changed; the other two keep the firmware defaults.
+                self._write(b"\x1b\x37" + bytes([7, self.PRINT_HEAT_TIME, 2]))
+            if self.PRINT_DENSITY is not None:
+                # DC2 # n: bits 0-4 density, bits 5-7 break time (250 us units).
+                # Break time stays at its default of 2.
+                self._write(b"\x12\x23" + bytes([(2 << 5) | self.PRINT_DENSITY]))
+        except Exception:
+            logger.debug("Applying print tuning failed", exc_info=True)
 
     def _initialize_printer(self):
         """Send initialization commands to ensure ASCII-only mode."""
