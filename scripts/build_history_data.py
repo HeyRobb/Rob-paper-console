@@ -52,7 +52,7 @@ import re
 import sys
 import time
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -145,6 +145,9 @@ DEFAULT_MIN_SITELINKS: Dict[str, int] = {
     "film": 45, "game": 30, "birth": 60,
     "tv": 40, "console": 25, "space": 45, "company": 60, "invention": 85,
 }
+# Launches this recent are skipped: the date may still be the planned one.
+RECENT_LAUNCH_DAYS = 365
+
 # Sparse kinds use wider year windows (multiples of --window-years) so they need
 # far fewer queries.
 WINDOW_MULTIPLIER: Dict[str, int] = {"console": 10, "space": 2, "company": 4, "invention": 8}
@@ -633,11 +636,13 @@ _NOT_SPACE = re.compile(
 # Discoveries and inventions share one Wikidata property, so the verb has to be
 # guessed. Human-made things (devices, software, methods) are "invented"; everything
 # else - planets, elements, places, finds - is "discovered", which is right far more
-# often than the other way round.
+# often than the other way round. (Generic words like "system" or "language" are left
+# out on purpose: "planet in the Solar System" and "inscribed in three languages"
+# describe discoveries.)
 _INVENTION_WORDS = re.compile(
-    r"\b(devices?|machines?|apparatus|software|computers?|programs?|programming|languages?|"
+    r"\b(devices?|machines?|apparatus|software|computers?|programs?|programming|"
     r"browsers?|protocols?|techniques?|methods?|algorithms?|engines?|vehicles?|instruments?|"
-    r"tools?|cameras?|process|technolog\w*|systems?|media|images?|animation|games?|toys?)\b",
+    r"tools?|cameras?|process|technolog\w*|media|images?|animation|games?|toys?)\b",
     re.IGNORECASE,
 )
 
@@ -697,6 +702,7 @@ def _entry_text_and_category(kind: str, row: Dict[str, Any]) -> Optional[Tuple[s
             return None
         return f"{label} is founded.", category
     if kind == "invention":
+        label = re.sub(r"^\d+\s+(?=[A-Z])", "", label)  # "2 Pallas" -> "Pallas"
         combined = f"{label} {description}"
         if GRIM_PATTERN.search(combined) or _SCIENCE_DENY.search(combined):
             return None
@@ -732,6 +738,8 @@ def load_wikidata_cache(
             continue
         if when > today:
             continue
+        if kind == "space" and when > today - timedelta(days=RECENT_LAUNCH_DAYS):
+            continue  # Wikidata often still holds a launch's planned date for a while
         built = _entry_text_and_category(kind, row)
         if built is None:
             continue

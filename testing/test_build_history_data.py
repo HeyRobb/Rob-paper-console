@@ -709,3 +709,30 @@ def test_main_applies_the_command_line_fame_cut_offs_when_building(bhd, tmp_path
              for day in days.values() for e in day}
     assert "Pluto is discovered." in texts and "Tiny Moon is discovered." not in texts
     assert bhd.DEFAULT_MIN_SITELINKS["invention"] >= 80 and bhd.DEFAULT_MIN_SITELINKS["space"] >= 40
+
+
+def test_discovery_verb_ignores_solar_system_and_languages_in_descriptions(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "invention", 1700, 2026, [
+        _binding("Q1", "Uranus", "1781-03-13", 200, desc="seventh planet from the Sun in the Solar System"),
+        _binding("Q2", "Rosetta Stone", "1799-07-15", 120, desc="stele with a decree in three languages"),
+        _binding("Q3", "2 Pallas", "1802-03-28", 100, desc="large asteroid in the asteroid belt"),
+        _binding("Q4", "web browser", "1990-12-20", 100, desc="software application for the web"),
+    ])
+
+    texts = {e["t"] for e in bhd.load_wikidata_cache(cache, kinds=["invention"], today=date(2026, 1, 1))}
+
+    assert texts == {"Uranus is discovered.", "Rosetta Stone is discovered.",
+                     "Pallas is discovered.", "web browser is invented."}
+
+
+def test_space_launches_from_the_last_year_are_skipped_but_older_ones_stay(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "space", 2017, 2026, [
+        _binding("Q1", "Perseverance", "2020-07-30", 90, desc="NASA Mars rover"),
+        _binding("Q2", "Planned Mission", "2026-02-15", 90, desc="crewed lunar mission"),
+    ])
+
+    texts = {e["t"] for e in bhd.load_wikidata_cache(cache, kinds=["space"], today=date(2026, 11, 19))}
+
+    assert texts == {"Perseverance launches."}
