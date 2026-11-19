@@ -66,12 +66,13 @@ NON_HOLIDAY_SLUGS = {
 
 # Category labels the site shows beside each entry, with the "Skip ..." checkbox for each
 # (same convention as the History module: a ticked box leaves that kind of day out, because
-# the settings form shows an unset checkbox as unchecked). Fun-leaning categories come first.
+# the settings form shows an unset checkbox as unchecked). The order here is also the print
+# order: things you can play, eat or drink come first, awareness days last.
 CATEGORIES = [
-    ("fun", "exclude_fun", "Skip fun days"),
-    ("food & beverage", "exclude_food_beverage", "Skip food & beverage days"),
-    ("special interest", "exclude_special_interest", "Skip special interest days"),
     ("arts & entertainment", "exclude_arts_entertainment", "Skip arts & entertainment days"),
+    ("food & beverage", "exclude_food_beverage", "Skip food & beverage days"),
+    ("fun", "exclude_fun", "Skip fun days"),
+    ("special interest", "exclude_special_interest", "Skip special interest days"),
     ("cultural", "exclude_cultural", "Skip cultural days"),
     ("appreciation", "exclude_appreciation", "Skip appreciation days"),
     ("health", "exclude_health", "Skip health days"),
@@ -79,9 +80,9 @@ CATEGORIES = [
     ("federal", "exclude_federal", "Skip federal days"),
 ]
 CATEGORY_LABELS = {label for label, _key, _title in CATEGORIES}
-# Days that make a better "fun ways to celebrate" receipt than awareness days.
-FUN_CATEGORIES = {"fun", "food & beverage", "special interest", "arts & entertainment"}
-SERIOUS_CATEGORIES = {"health", "cause", "federal", "cultural", "appreciation"}
+CATEGORY_RANK = {label: position for position, (label, _key, _title) in enumerate(CATEGORIES)}
+# Days the site doesn't label sort after appreciation days and before health, cause and federal.
+UNLABELED_RANK = CATEGORY_RANK["health"] - 0.5
 
 _WS = re.compile(r"\s+")
 _DATE_LABEL = re.compile(
@@ -297,11 +298,9 @@ def _reset_cache() -> None:
         _cache.update(date=None, holidays=None, ideas={})
 
 
-def _fun_rank(holiday: Dict[str, Any]) -> int:
-    category = holiday.get("category")
-    if category in FUN_CATEGORIES:
-        return 0
-    return 2 if category in SERIOUS_CATEGORIES else 1
+def _fun_rank(holiday: Dict[str, Any]) -> float:
+    """Sort key for the default print order (see CATEGORIES); ties keep the site's order."""
+    return CATEGORY_RANK.get(holiday.get("category"), UNLABELED_RANK)
 
 
 def _skipped_categories(config: Dict[str, Any] | None) -> frozenset:
@@ -377,6 +376,17 @@ def _resolve_int(config: Dict[str, Any] | None, key: str, default: int, maximum:
     return max(1, min(value, maximum))
 
 
+def _category_title(label: str | None) -> str:
+    """The site's category label for printing, e.g. "food & beverage" -> "Food & Beverage"."""
+    return label.title() if label else ""
+
+
+def _day_line(target_date: date, category: str | None) -> str:
+    """Date and category under each day's name, e.g. "Nov 19 - Arts & Entertainment"."""
+    parts = [f"{target_date:%b} {target_date.day}", _category_title(category)]
+    return " - ".join(part for part in parts if part)
+
+
 def _shorten(text: str, limit: int) -> str:
     text = _clean(text)
     if len(text) <= limit:
@@ -395,9 +405,10 @@ def _shorten(text: str, limit: int) -> str:
     config_schema={
         "type": "object",
         "description": (
-            "Fun, food and special-interest days print first unless you keep the site's "
-            "order. Tick a \"Skip\" box to leave that kind of day out; days the site doesn't "
-            "label with a category are always kept."
+            "Arts, food and fun days print first, then special interest, cultural and "
+            "appreciation days, then health, cause and federal days, unless you keep the "
+            "site's order. Tick a \"Skip\" box to leave that kind of day out; days the site "
+            "doesn't label with a category are always kept."
         ),
         "properties": {
             "count": {
@@ -410,6 +421,7 @@ def _shorten(text: str, limit: int) -> str:
             "ideas": {
                 "type": "integer",
                 "title": "Ideas per Day",
+                "description": "Most days list 3 ideas, so a higher number prints at most that many.",
                 "default": DEFAULT_IDEAS,
                 "minimum": 1,
                 "maximum": MAX_IDEAS,
@@ -421,7 +433,7 @@ def _shorten(text: str, limit: int) -> str:
             },
             "keep_page_order": {
                 "type": "boolean",
-                "title": "Keep the site's order (otherwise fun and food days print first)",
+                "title": "Keep the site's order (otherwise arts, food and fun days print first)",
                 "default": False,
             },
             **{key: {"type": "boolean", "title": title, "default": False} for _label, key, title in CATEGORIES},
@@ -457,6 +469,7 @@ def format_national_days_receipt(printer, config: Dict[str, Any] = None, module_
         if index:
             printer.feed(1)
         printer.print_bold(day["name"])
+        printer.print_caption(_day_line(target_date, day["category"]))
         if not day["ideas"]:
             continue
         printer.print_caption("Ways to celebrate:")

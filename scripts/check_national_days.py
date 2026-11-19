@@ -68,7 +68,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--count", type=int, default=nd.DEFAULT_COUNT, help="days to print (default %(default)s)")
     parser.add_argument("--ideas", type=int, default=nd.DEFAULT_IDEAS, help="ideas per day (default %(default)s)")
-    parser.add_argument("--keep-page-order", action="store_true", help="don't put fun and food days first")
+    parser.add_argument("--keep-page-order", action="store_true", help="print in the site's order instead of by category")
     parser.add_argument(
         "--skip",
         action="append",

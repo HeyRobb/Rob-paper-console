@@ -533,11 +533,13 @@ def test_receipt_prints_days_with_their_ideas_and_credits_the_source(site):
     assert calls[:3] == [("header", "NATIONAL DAYS", "confetti"), ("caption", "November 19, 2026"), ("line",)]
     assert calls[3:] == [
         ("bold", "Beaujolais Nouveau Day"),
+        ("caption", "Nov 19 - Food & Beverage"),
         ("caption", "Ways to celebrate:"),
         ("body", "- Beaujolais Nouveau Day idea one"),
         ("body", "- Beaujolais Nouveau Day idea two"),
         ("feed", 1),
         ("bold", "National Have A Bad Day Day"),
+        ("caption", "Nov 19 - Fun"),
         ("caption", "Ways to celebrate:"),
         ("body", "- National Have A Bad Day Day idea one"),
         ("body", "- National Have A Bad Day Day idea two"),
@@ -564,7 +566,7 @@ def test_receipt_can_include_shortened_descriptions(site):
 
     calls = _print({"count": 1, "ideas": 1, "include_details": True})
 
-    description = [c[1] for c in calls if c[0] == "caption"][1:-1]
+    description = [c[1] for c in calls if c[0] == "caption"][2:-1]  # after the date and the day line
     assert len(description) == 2  # "Ways to celebrate:" then the description
     assert description[1].endswith("...") and len(description[1]) <= nd.MAX_DETAIL_CHARS + 3
 
@@ -684,3 +686,99 @@ def test_receipt_says_nothing_matches_when_every_box_is_ticked(site):
     assert ("body", "match your settings.") in calls
     assert ("body", "internet connection.") not in calls  # the site loaded fine; that is not a failure
     assert not [c for c in calls if c[0] == "bold"]
+
+
+# ---- print order, and the date and category printed under each name -------------------------
+
+# Every category the site uses plus one unlabeled day, listed in the opposite of print order.
+ORDER_PAGE = (
+    "<h2>All holidays today</h2><ul>"
+    + _entry("federal-day", "Federal Day", "Federal")
+    + _entry("cause-day", "Cause Day", "Cause")
+    + _entry("health-day", "Health Day", "Health")
+    + '<li><a href="/mystery-day/">Mystery Day</a></li>'
+    + _entry("appreciation-day", "Appreciation Day", "Appreciation")
+    + _entry("cultural-day", "Cultural Day", "Cultural")
+    + _entry("special-interest-day", "Special Interest Day", "Special Interest")
+    + _entry("fun-day", "Fun Day", "Fun")
+    + _entry("food-day", "Food Day", "Food &amp; Beverage")
+    + _entry("arts-day", "Arts Day", "Arts &amp; Entertainment")
+    + "</ul>"
+)
+
+
+def test_default_order_runs_from_arts_and_food_to_awareness_days_with_unlabeled_days_between(site):
+    site.pages[nd.TODAY_URL] = ORDER_PAGE
+
+    days = nd.load_national_days(TODAY, count=10, idea_limit=1)
+
+    assert [d["name"] for d in days] == [
+        "Arts Day", "Food Day", "Fun Day", "Special Interest Day", "Cultural Day",
+        "Appreciation Day", "Mystery Day", "Health Day", "Cause Day", "Federal Day",
+    ]
+
+
+def test_special_interest_days_no_longer_jump_ahead_of_arts_food_and_fun_days(site):
+    # The real November 19 list, trimmed: the site lists these alphabetically, so special
+    # interest days used to win the first slots just by coming first.
+    site.pages[nd.TODAY_URL] = (
+        "<h2>All holidays today</h2><ul>"
+        + _entry("great-american-smokeout", "Great American Smokeout", "Health")
+        + _entry("beaujolais-nouveau-day", "Beaujolais Nouveau Day", "Food &amp; Beverage")
+        + _entry("international-journalist-day", "International Journalist Day", "Special Interest")
+        + _entry("national-camp-day", "National Camp Day", "Special Interest")
+        + _entry("national-carbonated-beverage-with-caffeine-day", "National Carbonated Beverage With Caffeine Day", "Food &amp; Beverage")
+        + _entry("national-play-monopoly-day", "National Play Monopoly Day", "Arts &amp; Entertainment")
+        + "</ul>"
+    )
+
+    days = nd.load_national_days(TODAY, count=3, idea_limit=1, skip_categories=frozenset({"health", "cause"}))
+
+    assert [d["name"] for d in days] == [
+        "National Play Monopoly Day", "Beaujolais Nouveau Day", "National Carbonated Beverage With Caffeine Day",
+    ]
+
+
+def test_days_in_the_same_category_keep_the_sites_order(site):
+    site.pages[nd.TODAY_URL] = (
+        "<h2>All holidays today</h2><ul>"
+        + _entry("b-day", "B Day", "Fun") + _entry("a-day", "A Day", "Fun") + _entry("c-day", "C Day", "Fun")
+        + "</ul>"
+    )
+
+    days = nd.load_national_days(TODAY, count=3, idea_limit=1)
+
+    assert [d["name"] for d in days] == ["B Day", "A Day", "C Day"]
+
+
+def test_each_day_prints_its_date_and_category_under_its_name(site):
+    calls = _print({"count": 3, "ideas": 1})
+
+    lines = [c[1] for c in calls if c[0] == "caption" and c[1].startswith("Nov 19")]
+    assert lines == ["Nov 19 - Food & Beverage", "Nov 19 - Fun", "Nov 19 - Special Interest"]
+    for position, call in enumerate(calls):
+        if call[0] == "bold":
+            assert calls[position + 1][0] == "caption" and calls[position + 1][1].startswith("Nov 19")
+
+
+def test_a_day_without_a_category_label_prints_only_its_date(site):
+    site.pages[nd.TODAY_URL] = '<h2>All holidays today</h2><ul><li><a href="/mystery-day/">Mystery Day</a></li></ul>'
+
+    calls = _print({"count": 1})
+
+    assert ("bold", "Mystery Day") in calls
+    assert ("caption", "Nov 19") in calls
+
+
+def test_date_line_uses_the_target_date_and_does_not_pad_the_day_number():
+    from datetime import date as _date
+
+    assert nd._day_line(_date(2026, 3, 5), "arts & entertainment") == "Mar 5 - Arts & Entertainment"
+    assert nd._day_line(_date(2026, 3, 5), None) == "Mar 5"
+    assert nd._category_title("food & beverage") == "Food & Beverage"
+
+
+def test_the_ideas_setting_warns_that_most_days_only_list_three():
+    spec = module_registry.get_module("national_days").config_schema["properties"]["ideas"]
+
+    assert "3" in spec["description"]
