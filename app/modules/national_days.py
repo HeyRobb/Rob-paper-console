@@ -51,8 +51,7 @@ DISALLOWED_PREFIXES = ("/resources/", "/wp-admin/")
 DEFAULT_COUNT = 3
 MAX_COUNT = 5
 DEFAULT_IDEAS = 2
-MAX_IDEAS = 4
-MAX_DETAIL_CHARS = 110
+MAX_IDEAS = 10
 
 # Single-segment pages that are navigation, not holidays.
 NON_HOLIDAY_SLUGS = {
@@ -387,14 +386,6 @@ def _day_line(target_date: date, category: str | None) -> str:
     return " - ".join(part for part in parts if part)
 
 
-def _shorten(text: str, limit: int) -> str:
-    text = _clean(text)
-    if len(text) <= limit:
-        return text
-    cut = text[:limit].rsplit(" ", 1)[0].rstrip(",;:- ")
-    return f"{cut}..."
-
-
 @register_module(
     type_id="national_days",
     label="National Days",
@@ -421,15 +412,10 @@ def _shorten(text: str, limit: int) -> str:
             "ideas": {
                 "type": "integer",
                 "title": "Ideas per Day",
-                "description": "Most days list 3 ideas, so a higher number prints at most that many.",
+                "description": "Most days list about 3 ideas, so a higher number rarely prints more.",
                 "default": DEFAULT_IDEAS,
                 "minimum": 1,
                 "maximum": MAX_IDEAS,
-            },
-            "include_details": {
-                "type": "boolean",
-                "title": "Include a short description with each idea",
-                "default": False,
             },
             "keep_page_order": {
                 "type": "boolean",
@@ -475,8 +461,6 @@ def format_national_days_receipt(printer, config: Dict[str, Any] = None, module_
         printer.print_caption("Ways to celebrate:")
         for idea in day["ideas"]:
             printer.print_body(f"- {idea['title']}")
-            if config.get("include_details") and idea["text"]:
-                printer.print_caption(_shorten(idea["text"], MAX_DETAIL_CHARS))
 
     printer.print_line()
     printer.print_caption(SOURCE_CREDIT)

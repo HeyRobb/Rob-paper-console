@@ -504,13 +504,14 @@ def test_module_is_registered_online_with_a_validated_config():
     assert definition.offline is False and definition.icon == "confetti" and definition.category == "content"
     props = definition.config_schema["properties"]
     assert props["count"]["default"] == 3 and props["ideas"]["default"] == 2
-    assert props["include_details"]["default"] is False and props["keep_page_order"]["default"] is False
+    assert props["keep_page_order"]["default"] is False
+    assert "include_details" not in props and props["ideas"]["maximum"] == 10
 
     module_registry.validate_module_config("national_days", {})
-    module_registry.validate_module_config("national_days", {"count": 5, "ideas": 4, "include_details": True})
+    module_registry.validate_module_config("national_days", {"count": 5, "ideas": 10})
     module_registry.validate_module_config("national_days", {"exclude_fun": True, "exclude_cause": False})
     for bad in (
-        {"count": 0}, {"count": 6}, {"ideas": 5}, {"count": "three"}, {"include_details": "yes"},
+        {"count": 0}, {"count": 6}, {"ideas": 11}, {"ideas": 0}, {"count": "three"},
         {"exclude_cause": "yes"},
     ):
         with pytest.raises(ValueError):
@@ -559,16 +560,42 @@ def test_receipt_defaults_to_three_days_and_two_ideas_each(site):
     assert len([c for c in calls if c[0] == "body"]) == 6
 
 
-def test_receipt_can_include_shortened_descriptions(site):
+def test_receipt_prints_only_idea_titles_never_descriptions(site):
     site.pages["https://nationaltoday.com/beaujolais-nouveau-day/"] = _holiday_page(
-        "Beaujolais Nouveau Day", [("Open a bottle", "word " * 60)]
+        "Beaujolais Nouveau Day", [("Open a bottle", "A long description that must stay off the paper.")]
     )
 
-    calls = _print({"count": 1, "ideas": 1, "include_details": True})
+    calls = _print({"count": 1, "ideas": 1})
 
-    description = [c[1] for c in calls if c[0] == "caption"][2:-1]  # after the date and the day line
-    assert len(description) == 2  # "Ways to celebrate:" then the description
-    assert description[1].endswith("...") and len(description[1]) <= nd.MAX_DETAIL_CHARS + 3
+    assert [c for c in calls if c[0] == "caption"] == [
+        ("caption", "November 19, 2026"),
+        ("caption", "Nov 19 - Food & Beverage"),
+        ("caption", "Ways to celebrate:"),
+        ("caption", "via nationaltoday.com"),
+    ]
+    assert ("body", "- Open a bottle") in calls
+    assert not [c for c in calls if "description" in str(c)]
+
+
+def test_a_saved_config_that_still_has_the_old_description_option_works_and_prints_no_descriptions(site):
+    config = {"count": 1, "ideas": 1, "include_details": True}
+
+    module_registry.validate_module_config("national_days", config)
+    calls = _print(config)
+
+    assert len([c for c in calls if c[0] == "body"]) == 1
+
+
+def test_up_to_ten_ideas_per_day_are_printed_when_the_page_has_them(site):
+    site.pages["https://nationaltoday.com/beaujolais-nouveau-day/"] = _holiday_page(
+        "Beaujolais Nouveau Day", [(f"Idea {n}", f"Text {n}.") for n in range(1, 13)]
+    )
+
+    ten = _print({"count": 1, "ideas": 10})
+    too_many = _print({"count": 1, "ideas": 99})  # out-of-range values are clamped, never an error
+
+    assert [c[1] for c in ten if c[0] == "body"] == [f"- Idea {n}" for n in range(1, 11)]
+    assert len([c for c in too_many if c[0] == "body"]) == 10
 
 
 def test_receipt_keeps_site_order_when_asked(site):
@@ -604,11 +631,6 @@ def test_receipt_never_raises_on_a_broken_page(site):
     calls = _print()
 
     assert ("body", "internet connection.") in calls
-
-
-def test_shorten_cuts_on_a_word_boundary():
-    assert nd._shorten("short text", 50) == "short text"
-    assert nd._shorten("alpha beta gamma delta", 12) == "alpha beta..."
 
 
 # ---- category checkboxes ------------------------------------------------------------------

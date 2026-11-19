@@ -146,7 +146,6 @@ def main() -> int:
     config = {
         "count": args.count,
         "ideas": args.ideas,
-        "include_details": True,
         "keep_page_order": args.keep_page_order,
         **{key: True for label, key, _title in nd.CATEGORIES if label in args.skip},
     }
