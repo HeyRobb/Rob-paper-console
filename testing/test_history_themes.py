@@ -95,7 +95,7 @@ def test_skip_toggles_map_to_remaining_categories():
     # still has it must be accepted and simply ignored.
     assert history_module._resolve_categories(
         {"exclude_games": True, "exclude_birthdays": True, "exclude_music": False}
-    ) == {"film_tv", "music", "tech", "culture"}
+    ) == {"film_tv", "music", "tech", "culture", "science"}
     assert history_module._resolve_categories(
         {key: True for key, _category, _title in history_module.GENRES}
     ) == frozenset()
@@ -337,10 +337,10 @@ def test_config_schema_has_one_skip_checkbox_per_genre_defaulting_to_unchecked()
     toggles = {k: v for k, v in properties.items() if k.startswith("exclude_")}
 
     assert set(toggles) == {key for key, _category, _title in history_module.GENRES}
-    assert len(toggles) == 5
+    assert len(toggles) == 6
     assert "exclude_birthdays" not in toggles
     assert history_module.ALL_GENRE_CATEGORIES == {
-        "film_tv", "music", "games", "tech", "culture"
+        "film_tv", "music", "games", "tech", "culture", "science"
     }
     for toggle in toggles.values():
         assert toggle["type"] == "boolean" and toggle["title"].startswith("Skip ")
@@ -408,3 +408,80 @@ def test_shipped_classic_history_for_nov_19_has_no_holocaust_or_killing():
     assert events
     for word in ("holocaust", "janowska", "killed", "kills", "murder", "died", "dies", "massacre"):
         assert word not in joined
+
+
+# ---- category-first selection ------------------------------------------------
+
+
+def test_pick_events_visits_each_genre_before_repeating_one():
+    candidates = [
+        ("2001: Film A.", "film_tv"), ("2002: Film B.", "film_tv"), ("2003: Film C.", "film_tv"),
+        ("2004: Film D.", "film_tv"), ("2005: Film E.", "film_tv"),
+        ("1999: A console ships.", "games"),
+        ("1976: A company is founded.", "tech"),
+    ]
+    import random
+
+    for seed in range(40):
+        picked = history_module.pick_events(candidates, 3, random.Random(seed))
+        genre_of = {text: genre for text, genre in candidates}
+        genres = {genre_of[text] for text in picked}
+        assert genres == {"film_tv", "games", "tech"}, (seed, picked)
+
+
+def test_pick_events_without_rng_is_deterministic_and_round_robin_by_score():
+    candidates = [
+        ("2011: Game.", "games"), ("2010: Film one.", "film_tv"), ("2009: Film two.", "film_tv"),
+        ("1990: Gadget.", "tech"),
+    ]
+
+    assert history_module.pick_events(candidates, 2) == ["2011: Game.", "2010: Film one."]
+    assert history_module.pick_events(candidates, 4) == [text for text, _ in candidates]
+    # once the single-entry genres are used up, the film genre supplies the rest
+    assert history_module.pick_events(candidates, 3) == ["2011: Game.", "2010: Film one.", "1990: Gadget."]
+
+
+def test_pick_events_handles_edges_and_untagged_classic_entries():
+    import random
+
+    assert history_module.pick_events([], 3, random.Random(1)) == []
+    assert history_module.pick_events([("1999: X.", None)], 0, random.Random(1)) == []
+    assert history_module.pick_events([("1999: X.", None)], -2, random.Random(1)) == []
+    classic = [(f"19{n}: Calm event {n}.", None) for n in range(10, 16)]
+    picked = history_module.pick_events(classic, 3, random.Random(5))
+    assert len(picked) == len(set(picked)) == 3 and set(picked) <= {t for t, _ in classic}
+
+
+def test_receipt_without_reference_date_mixes_genres(themed_db, monkeypatch):
+    captured = {}
+
+    def _fake_timeline(width, items, item_height, font):  # noqa: ARG001
+        captured["items"] = items
+        return Image.new("1", (8, 8), 1)
+
+    monkeypatch.setattr(history_module, "draw_timeline_image", _fake_timeline)
+    monkeypatch.setattr(history_module, "current_date", lambda: date(2026, 11, 18))
+
+    seen = set()
+    for _ in range(25):
+        history_module.format_history_receipt(_CapturePrinter(), {"count": 4}, None)
+        seen.add(tuple(sorted(item["text"] for item in captured["items"])))
+
+    # four genres are available, so four events always means one from each
+    assert seen == {tuple(sorted([
+        "Calvin and Hobbes debuts.", "Minecraft 1.0 is released.",
+        "Steamboat Willie premieres.", "Intel ships a chip.",
+    ]))}
+
+
+def test_science_genre_is_selectable_and_skippable(tmp_path, monkeypatch):
+    path = _write_themed(tmp_path, {"2": {"18": [
+        {"y": 1930, "t": "Pluto is discovered.", "c": "science", "s": 70},
+        {"y": 1985, "t": "Some film is released.", "c": "film_tv", "s": 60},
+    ]}})
+    monkeypatch.setattr(history_module, "THEMED_DB_PATH", path)
+    day = date(2026, 2, 18)
+
+    assert history_module.get_events_for_theme(day) == ["1930: Pluto is discovered.", "1985: Some film is released."]
+    only_film = history_module._resolve_categories({"exclude_science": True})
+    assert history_module.get_events_for_theme(day, categories=only_film) == ["1985: Some film is released."]

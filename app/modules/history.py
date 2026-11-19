@@ -1,5 +1,6 @@
 import json
-from typing import Dict, Any, Iterable, List
+import random
+from typing import Dict, Any, Iterable, List, Optional, Tuple
 from pathlib import Path
 from datetime import date, datetime
 from app.utils import wrap_text, wrap_text_pixels
@@ -39,6 +40,7 @@ GENRES = [
     ("exclude_games", "games", "Skip video games"),
     ("exclude_tech", "tech", "Skip tech & internet"),
     ("exclude_culture", "culture", "Skip comics, toys & theme parks"),
+    ("exclude_science", "science", "Skip space, science & inventions"),
 ]
 # Entries in history_themed.json whose category is not listed here (for example
 # "birthday" entries from an older build) are never printed; famous birthdays
@@ -106,12 +108,12 @@ def _load_themed_db() -> Dict[str, Any] | None:
     return data
 
 
-def get_themed_events_for_date(
+def get_themed_entries_for_date(
     target_date: date,
     theme: str = DEFAULT_THEME,
     categories: Iterable[str] | None = None,
-) -> List[str]:
-    """Themed events for a date as "YEAR: text" strings, best-scored first.
+) -> List[Dict[str, Any]]:
+    """Themed entries (dicts with y, t, c, s) for a date, best-scored first.
 
     `categories` limits which genres are used (default: all of them).
     """
@@ -132,8 +134,20 @@ def get_themed_events_for_date(
         if isinstance(e, dict) and e.get("c") in categories and e.get("t")
     ]
     picked.sort(key=lambda e: (-(e.get("s") or 0), -(e.get("y") or 0)))
+    return picked
 
-    return [f"{e['y']}: {e['t']}" if e.get("y") else e["t"] for e in picked]
+
+def _entry_text(entry: Dict[str, Any]) -> str:
+    return f"{entry['y']}: {entry['t']}" if entry.get("y") else entry["t"]
+
+
+def get_themed_events_for_date(
+    target_date: date,
+    theme: str = DEFAULT_THEME,
+    categories: Iterable[str] | None = None,
+) -> List[str]:
+    """Themed events for a date as "YEAR: text" strings, best-scored first."""
+    return [_entry_text(e) for e in get_themed_entries_for_date(target_date, theme, categories)]
 
 
 def get_fallback_events_for_date(target_date: date) -> List[str]:
@@ -145,22 +159,73 @@ def get_fallback_events_for_date(target_date: date) -> List[str]:
     return [e for e in get_events_for_date(target_date) if not _GRIM_PATTERN.search(e)]
 
 
+def get_event_candidates(
+    target_date: date,
+    theme: str = DEFAULT_THEME,
+    categories: Iterable[str] | None = None,
+) -> List[Tuple[str, Optional[str]]]:
+    """(text, genre) pairs for a date under the chosen theme, best-scored first.
+
+    The genre is None for classic history entries. Falls back to positive classic
+    history when the theme has nothing for the day.
+    """
+    if theme == THEME_CLASSIC:
+        # If a day has no positive classic entry, show a pop-culture/tech one instead.
+        classic = get_fallback_events_for_date(target_date)
+        if classic:
+            return [(text, None) for text in classic]
+        return [
+            (_entry_text(e), e.get("c"))
+            for e in get_themed_entries_for_date(target_date, THEME_POP)
+        ]
+
+    themed = get_themed_entries_for_date(target_date, theme, categories)
+    if themed:
+        return [(_entry_text(e), e.get("c")) for e in themed]
+    return [(text, None) for text in get_fallback_events_for_date(target_date)]
+
+
 def get_events_for_theme(
     target_date: date,
     theme: str = DEFAULT_THEME,
     categories: Iterable[str] | None = None,
 ) -> List[str]:
     """Events for a date under the chosen theme, falling back to positive classic history."""
-    if theme == THEME_CLASSIC:
-        # If a day has no positive classic entry, show a pop-culture/tech one instead.
-        return get_fallback_events_for_date(target_date) or get_themed_events_for_date(
-            target_date, THEME_POP
-        )
+    return [text for text, _genre in get_event_candidates(target_date, theme, categories)]
 
-    themed = get_themed_events_for_date(target_date, theme, categories)
-    if themed:
-        return themed
-    return get_fallback_events_for_date(target_date)
+
+def pick_events(
+    candidates: List[Tuple[str, Optional[str]]],
+    count: int,
+    rng: Optional[random.Random] = None,
+) -> List[str]:
+    """Choose `count` events, one genre at a time so no single genre crowds the rest.
+
+    Each round visits every genre that still has entries (in random order, or in
+    best-score order when `rng` is None) and takes one entry from it. A day with
+    five films and one album therefore prints a film and the album for count=2
+    instead of two films. With `rng` None the choice is deterministic, which the
+    snapshot renderer relies on.
+    """
+    count = max(count, 0)
+    if len(candidates) <= count:
+        return [text for text, _genre in candidates]
+
+    groups: Dict[Optional[str], List[str]] = {}
+    for text, genre in candidates:  # candidates arrive best-scored first
+        groups.setdefault(genre, []).append(text)
+
+    picked: List[str] = []
+    while len(picked) < count:
+        genres = [g for g, texts in groups.items() if texts]
+        if rng is not None:
+            rng.shuffle(genres)
+        for genre in genres:
+            if len(picked) >= count:
+                break
+            texts = groups[genre]
+            picked.append(texts.pop(rng.randrange(len(texts)) if rng is not None else 0))
+    return picked
 
 
 def _resolve_theme(config: Dict[str, Any] | None) -> str:
@@ -230,7 +295,7 @@ def format_history_receipt(
     """Prints 'On This Day' historical events."""
 
     target_date = _resolve_reference_date(config)
-    events = get_events_for_theme(
+    candidates = get_event_candidates(
         target_date, _resolve_theme(config), _resolve_categories(config)
     )
 
@@ -242,14 +307,10 @@ def format_history_receipt(
         except:
             pass
 
-    import random
-    if len(events) > count:
-        if config and config.get("reference_date"):
-            selected_events = events[:count]
-        else:
-            selected_events = random.sample(events, count)
-    else:
-        selected_events = events
+    # A fixed reference date (snapshots, tests) picks deterministically; a normal
+    # print picks at random, one genre at a time.
+    fixed_date = bool(config and config.get("reference_date"))
+    selected_events = pick_events(candidates, count, None if fixed_date else random.Random())
 
     # Header
     printer.print_header(module_name or "ON THIS DAY", icon="hourglass")

@@ -34,7 +34,7 @@ class FakeResponse:
         return self._payload
 
 
-def _binding(qid, label, day, sl, occ=None):
+def _binding(qid, label, day, sl, occ=None, desc=None):
     row = {
         "item": {"value": f"http://www.wikidata.org/entity/{qid}"},
         "itemLabel": {"value": label},
@@ -43,6 +43,8 @@ def _binding(qid, label, day, sl, occ=None):
     }
     if occ:
         row["occ"] = {"value": f"http://www.wikidata.org/entity/{occ}"}
+    if desc:
+        row["itemDescription"] = {"value": desc}
     return row
 
 
@@ -487,3 +489,176 @@ def test_classify_drops_entries_about_deaths_and_disasters_but_keeps_look_alike_
     assert bhd.classify(train, 2001) is None
     assert bhd.classify(raiders, 1981)[0] == "film_tv"  # "Raiders" is not a raid
     assert bhd.classify(dartmouth, 1956)[0] == "tech"  # a conference is not a political summit
+
+
+# ---- newer Wikidata kinds: TV, consoles, space, companies, inventions -----------
+
+
+def _write_rows(bhd, cache, kind, start, end, bindings):
+    cache.mkdir(exist_ok=True)
+    (cache / f"{kind}_{start}_{end}.json").write_text(json.dumps(bhd.bindings_to_rows(kind, bindings)))
+
+
+def test_new_kind_queries_contain_expected_ids_properties_and_window(bhd):
+    tv = bhd.build_tv_query(40, 1990, 1994)
+    console = bhd.build_console_query(25, 1970, 2026)
+    space = bhd.build_space_query(30, 1957, 1966)
+    company = bhd.build_company_query(60, 1970, 1989)
+    invention = bhd.build_invention_query(40, 1700, 1739)
+
+    assert "wd:Q5398426" in tv and "p:P577/psv:P577" in tv and "p:P580/psv:P580" in tv and "UNION" in tv
+    assert "wdt:P31/wdt:P279* wd:Q8076" in console and "?sl >= 25" in console
+    assert "p:P619/psv:P619" in space and "?itemDescription" in space
+    assert all(q in company for q in ("wd:Q4830453", "wd:Q6881511", "wd:Q783794", "wd:Q891723"))
+    assert "p:P571/psv:P571" in company and "?itemDescription" in company
+    assert "wdt:P61" in invention and "p:P575/psv:P575" in invention
+    for query, first, after in ((tv, "1990", "1995"), (space, "1957", "1967"), (invention, "1700", "1740")):
+        assert f'"{first}-01-01T00:00:00Z"' in query and f'"{after}-01-01T00:00:00Z"' in query
+        assert "?prec >= 11" in query and "SERVICE wikibase:label" in query
+    assert "?itemDescription" not in tv and "?itemDescription" not in console
+
+
+def test_every_new_query_id_and_property_is_in_the_checked_list(bhd):
+    import re
+
+    queries = [
+        bhd.build_tv_query(1, 2000, 2001), bhd.build_console_query(1, 2000, 2001),
+        bhd.build_space_query(1, 2000, 2001), bhd.build_company_query(1, 2000, 2001),
+        bhd.build_invention_query(1, 2000, 2001),
+    ]
+    used = set(re.findall(r"\b[QP]\d+\b", " ".join(queries)))
+    assert used and used <= set(bhd.WD_IDS), sorted(used - set(bhd.WD_IDS))
+
+
+def test_tv_console_and_space_rows_become_entries_in_the_right_genre(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "tv", 1990, 1994, [_binding("Q1", "Some Sitcom", "1993-09-22", 80)])
+    _write_rows(bhd, cache, "console", 1970, 2026, [_binding("Q2", "Some Console", "1995-09-09", 70)])
+    _write_rows(bhd, cache, "space", 1957, 1966, [
+        _binding("Q3", "Sputnik 1", "1957-10-04", 120, desc="first artificial Earth satellite"),
+        _binding("Q4", "Soyuz 11", "1971-06-06", 90, desc="crewed Soviet space mission"),
+        _binding("Q5", "Space Shuttle Challenger", "1983-04-04", 90, desc="space shuttle orbiter"),
+        _binding("Q6", "Doomed Probe", "1965-03-03", 60, desc="probe that crashed on arrival"),
+    ])
+
+    kinds = ["tv", "console", "space"]
+    entries = {e["t"]: e for e in bhd.load_wikidata_cache(cache, kinds=kinds, today=date(2026, 11, 19))}
+
+    assert set(entries) == {"Some Sitcom premieres on TV.", "Some Console is released.", "Sputnik 1 launches."}
+    assert entries["Some Sitcom premieres on TV."]["c"] == "film_tv"
+    assert entries["Some Console is released."]["c"] == "games"
+    sputnik = entries["Sputnik 1 launches."]
+    assert (sputnik["m"], sputnik["d"], sputnik["y"], sputnik["c"]) == (10, 4, 1957, "science")
+
+
+def test_company_rows_need_a_tech_media_or_games_description_and_pick_the_genre(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "company", 1970, 1989, [
+        _binding("Q1", "Apple Inc.", "1976-04-01", 200, desc="American multinational technology company"),
+        _binding("Q2", "Atari", "1972-06-27", 90, desc="American video game company"),
+        _binding("Q3", "Pixar", "1986-02-03", 90, desc="American animation studio"),
+        _binding("Q4", "LEGO", "1932-08-10", 90, desc="Danish toy company"),
+        _binding("Q5", "Big Bank", "1975-01-01", 90, desc="multinational investment bank"),
+        _binding("Q6", "Arms Maker", "1975-01-02", 90, desc="technology company that makes weapons"),
+        _binding("Q7", "Nameless", "1975-01-03", 90),  # no description
+    ])
+
+    entries = {e["t"]: e["c"] for e in bhd.load_wikidata_cache(cache, kinds=["company"], today=date(2026, 1, 1))}
+
+    assert entries == {
+        "Apple Inc. is founded.": "tech", "Atari is founded.": "games",
+        "Pixar is founded.": "film_tv", "LEGO is founded.": "culture",
+    }
+    assert bhd.company_category("") is None and bhd.company_category("Swiss watch maker") is None
+
+
+def test_invention_rows_say_discovered_or_invented_and_skip_medical_and_harmful_things(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "invention", 1700, 1739, [
+        _binding("Q1", "Pluto", "1930-02-18", 200, desc="dwarf planet in the Kuiper belt"),
+        _binding("Q2", "Telephone", "1876-03-10", 200, desc="device for transmitting speech"),
+        _binding("Q3", "Smallpox", "1796-05-14", 100, desc="infectious disease"),
+        _binding("Q4", "Dynamite", "1867-11-07", 100, desc="explosive invented by Nobel"),
+        _binding("Q5", "Deadly Gadget", "1900-01-01", 100, desc="device that kills"),
+    ])
+
+    entries = {e["t"]: e["c"] for e in bhd.load_wikidata_cache(cache, kinds=["invention"], today=date(2026, 1, 1))}
+
+    assert entries == {"Pluto is discovered.": "science", "Telephone is invented.": "science"}
+
+
+def test_load_wikidata_cache_skips_rows_dated_in_the_future(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "film", 2025, 2029, [
+        _binding("Q1", "Out Now", "2026-11-18", 99), _binding("Q2", "Coming Soon", "2026-12-18", 99),
+    ])
+
+    texts = {e["t"] for e in bhd.load_wikidata_cache(cache, today=date(2026, 11, 19))}
+
+    assert texts == {"Out Now is released."}
+
+
+def test_default_kinds_stay_film_game_birth_and_new_kinds_are_opt_in(bhd, tmp_path):
+    assert bhd.WIKIDATA_KINDS == ("film", "game", "birth")
+    assert set(bhd.EXTRA_KINDS) == {"tv", "console", "space", "company", "invention"}
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "tv", 1990, 1994, [_binding("Q1", "Some Sitcom", "1993-09-22", 80)])
+
+    assert bhd.load_wikidata_cache(cache, today=date(2026, 1, 1)) == []  # default kinds ignore tv
+    assert len(bhd.load_wikidata_cache(cache, kinds=["tv"], today=date(2026, 1, 1))) == 1
+
+
+def test_fetch_new_kinds_uses_wider_windows_and_default_cutoffs(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    calls = []
+    count = bhd.fetch_wikidata(
+        cache, "me@example.com", {}, window_size=5, delay=0, http_get=_recording_http_get(calls),
+        sleep=lambda s: None, this_year=2026,
+        kinds=["console", "space", "invention"], since={"console": 1990, "space": 1990, "invention": 1990},
+    )
+
+    names = sorted(p.name for p in cache.glob("*.json"))
+    assert count == len(calls) == len(names)
+    # console x10, space x2, invention x8 times the 5-year base window
+    assert names == [
+        "console_1990_2026.json", "invention_1990_2026.json",
+        "space_1990_1999.json", "space_2000_2009.json", "space_2010_2019.json", "space_2020_2026.json",
+    ]
+
+
+def test_fetch_new_kinds_does_not_disturb_existing_kinds_cache_names(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    calls = []
+    bhd.fetch_wikidata(
+        cache, "me@example.com", MINS, window_size=5, delay=0, http_get=_recording_http_get(calls),
+        sleep=lambda s: None, this_year=2026, kinds=["film", "tv"], since={"film": 1981, "tv": 1981},
+    )
+
+    names = {p.name for p in cache.glob("*.json")}
+    assert "film_1981_1985.json" in names and "tv_1981_1985.json" in names
+
+
+def test_cli_new_kind_flags_parse(bhd):
+    args = bhd.parse_args(["--wikidata-kinds", "film,tv,space", "--tv-since", "1960",
+                           "--min-sitelinks-space", "50", "--company-since", "1900"])
+
+    assert args.wikidata_kinds == ["film", "tv", "space"]
+    assert (args.tv_since, args.min_sitelinks_space, args.company_since) == (1960, 50, 1900)
+    assert args.console_since == bhd.DEFAULT_SINCE["console"]
+    assert args.min_sitelinks_tv == bhd.DEFAULT_MIN_SITELINKS["tv"]
+
+
+def test_main_offline_build_merges_new_kinds_and_writes_science_genre(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "tv", 1990, 1994, [_binding("Q1", "Some Sitcom", "1993-09-22", 80)])
+    _write_rows(bhd, cache, "space", 1957, 1966, [
+        _binding("Q2", "Sputnik 1", "1957-10-04", 120, desc="first artificial Earth satellite")])
+    out = tmp_path / "out.json"
+
+    assert bhd.main(["--no-classic", "--cache-dir", str(cache), "--output", str(out),
+                     "--wikidata-kinds", "tv,space"]) == 0
+
+    events = json.loads(out.read_text())["events"]
+    by_text = {e["t"]: e["c"] for days in events.values() for day in days.values() for e in day}
+    assert by_text["Sputnik 1 launches."] == "science" and by_text["Some Sitcom premieres on TV."] == "film_tv"
+    assert {e["c"] for days in events.values() for day in days.values() for e in day} <= bhd.CATEGORIES

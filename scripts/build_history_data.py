@@ -4,8 +4,10 @@
 Sources, merged and de-duplicated per calendar day:
   1. app/data/history.json - classic entries, tagged by app.history_rules.classify()
   2. scripts/history_sources/curated_milestones.json - hand-checked milestones
-  3. Wikidata (optional, needs internet) - films and video games, ranked by how
-     many Wikipedia language editions cover them (a fame proxy).
+  3. Wikidata (optional, needs internet) - films, video games, TV series, game
+     consoles, space launches, company foundings and famous inventions or
+     discoveries, ranked by how many Wikipedia language editions cover them (a
+     fame proxy).
 
 Famous birthdays are written to a second file, app/data/birthdays.json, for the
 Birthdays module (same ranking, up to --births-per-day people per day). They are
@@ -26,6 +28,14 @@ since 1981, nothing else), then build:
     ./.venv/bin/python scripts/build_history_data.py --fetch-wikidata --contact you@example.com \\
         --wikidata-kinds film,birth --film-since 1981 --birth-since 1981 \\
         --birth-occupations actor --min-sitelinks-birth 40
+
+Add the newer kinds (TV, consoles, space launches, companies, inventions) on top of
+what is already cached; windows that are cached are skipped:
+
+    ./.venv/bin/python scripts/build_history_data.py --fetch-wikidata --contact you@example.com \\
+        --wikidata-kinds film,game,birth,tv,console,space,company,invention \\
+        --film-since 1981 --game-since 1981 --tv-since 1960 \\
+        --birth-since 1941 --birth-occupations actor --min-sitelinks-birth 40
 
 Wikidata responses are cached under scripts/history_sources/wikidata_cache/ so
 a re-run only fetches windows that are missing. Every later build (with or
@@ -50,7 +60,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.history_rules import classify  # noqa: E402
+from app.history_rules import GRIM_PATTERN, classify  # noqa: E402
 
 CLASSIC_PATH = ROOT / "app" / "data" / "history.json"
 CURATED_PATH = ROOT / "scripts" / "history_sources" / "curated_milestones.json"
@@ -59,7 +69,7 @@ OUTPUT_PATH = ROOT / "app" / "data" / "history_themed.json"
 BIRTHDAYS_PATH = ROOT / "app" / "data" / "birthdays.json"
 
 # Categories the module understands (keep in sync with app/modules/history.py).
-CATEGORIES = {"film_tv", "music", "games", "tech", "culture"}
+CATEGORIES = {"film_tv", "music", "games", "tech", "culture", "science"}
 
 PER_DAY_CAP = 14
 BIRTHDAYS_PER_DAY_CAP = 15  # people kept per calendar day in birthdays.json
@@ -84,10 +94,22 @@ WD_IDS: Dict[str, str] = {
     "Q2405480": "voice actor",
     "Q82594": "computer scientist",
     "Q5482740": "programmer",
+    "Q5398426": "television series",
+    "Q8076": "video game console",
+    "Q4830453": "business",
+    "Q6881511": "enterprise",
+    "Q783794": "company",
+    "Q891723": "public company",
     "P31": "instance of",
+    "P279": "subclass of",
     "P106": "occupation",
     "P569": "date of birth",
     "P577": "publication date",
+    "P580": "start time",
+    "P571": "inception",
+    "P619": "UTC date of spacecraft launch",
+    "P575": "time of discovery or invention",
+    "P61": "discoverer or inventor",
 }
 
 # Occupation priority for birthdays (first match wins when someone has several).
@@ -106,10 +128,26 @@ BIRTH_OCCUPATIONS: List[Tuple[str, str]] = [
 Entry = Dict[str, Any]  # keys: m, d, y, c, s, t, src
 HttpGet = Callable[..., Any]
 
-# Wikidata kinds the generator can fetch, and the earliest year fetched for each
-# unless --film-since / --game-since / --birth-since say otherwise.
+# Wikidata kinds the generator can fetch. WIKIDATA_KINDS is what runs when
+# --wikidata-kinds is not given; EXTRA_KINDS are opt-in so existing commands keep
+# fetching and merging exactly what they did before.
 WIKIDATA_KINDS = ("film", "game", "birth")
-DEFAULT_SINCE: Dict[str, int] = {"film": 1920, "game": 1970, "birth": 1850}
+EXTRA_KINDS = ("tv", "console", "space", "company", "invention")
+ALL_KINDS = WIKIDATA_KINDS + EXTRA_KINDS
+
+# Earliest year fetched per kind unless a --<kind>-since flag says otherwise.
+DEFAULT_SINCE: Dict[str, int] = {
+    "film": 1920, "game": 1970, "birth": 1850,
+    "tv": 1950, "console": 1970, "space": 1957, "company": 1850, "invention": 1700,
+}
+# Minimum number of Wikipedia language editions (the fame cut-off) per kind.
+DEFAULT_MIN_SITELINKS: Dict[str, int] = {
+    "film": 45, "game": 30, "birth": 60,
+    "tv": 40, "console": 25, "space": 30, "company": 60, "invention": 40,
+}
+# Sparse kinds use wider year windows (multiples of --window-years) so they need
+# far fewer queries.
+WINDOW_MULTIPLIER: Dict[str, int] = {"console": 10, "space": 2, "company": 4, "invention": 8}
 
 
 # --------------------------------------------------------------------------
@@ -253,6 +291,75 @@ SELECT ?item ?itemLabel ?date ?sl ?occ WHERE {{
 """.strip()
 
 
+def _date_query(match: str, date_clause: str, min_sitelinks: int, start_year: int,
+                end_year: int, description: bool = False) -> str:
+    """Shared shape of the newer kinds: items matching `match` with a day-precision date.
+
+    `date_clause` must bind ?v to the date value node. The description is only
+    selected when the entry text or the positivity checks need it.
+    """
+    desc = " ?itemDescription" if description else ""
+    return f"""
+SELECT ?item ?itemLabel{desc} ?date ?sl WHERE {{
+  {match}
+  ?item wikibase:sitelinks ?sl .
+  FILTER(?sl >= {min_sitelinks})
+  {date_clause}
+  ?v wikibase:timeValue ?date ;
+     wikibase:timePrecision ?prec .
+  FILTER(?prec >= 11)
+  {_window_filter(start_year, end_year)}
+  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
+}}
+""".strip()
+
+
+def build_tv_query(min_sitelinks: int, start_year: int, end_year: int) -> str:
+    """TV series by first air date (publication date, or start time when that is what is set)."""
+    return _date_query(
+        "?item wdt:P31 wd:Q5398426 .",
+        "{ ?item p:P577/psv:P577 ?v . } UNION { ?item p:P580/psv:P580 ?v . }",
+        min_sitelinks, start_year, end_year,
+    )
+
+
+def build_console_query(min_sitelinks: int, start_year: int, end_year: int) -> str:
+    """Game consoles (including handhelds and other subclasses) by release date."""
+    return _date_query(
+        "?item wdt:P31/wdt:P279* wd:Q8076 .",
+        "?item p:P577/psv:P577 ?v .",
+        min_sitelinks, start_year, end_year,
+    )
+
+
+def build_space_query(min_sitelinks: int, start_year: int, end_year: int) -> str:
+    """Spacecraft and missions by launch date."""
+    return _date_query(
+        "",
+        "?item p:P619/psv:P619 ?v .",
+        min_sitelinks, start_year, end_year, description=True,
+    )
+
+
+def build_company_query(min_sitelinks: int, start_year: int, end_year: int) -> str:
+    """Businesses by founding date (the description decides if they are tech/media/games)."""
+    return _date_query(
+        "VALUES ?cls { wd:Q4830453 wd:Q6881511 wd:Q783794 wd:Q891723 }\n"
+        "  ?item wdt:P31 ?cls .",
+        "?item p:P571/psv:P571 ?v .",
+        min_sitelinks, start_year, end_year, description=True,
+    )
+
+
+def build_invention_query(min_sitelinks: int, start_year: int, end_year: int) -> str:
+    """Things with a named inventor or discoverer, by discovery or invention date."""
+    return _date_query(
+        "FILTER EXISTS { ?item wdt:P61 ?who . }",
+        "?item p:P575/psv:P575 ?v .",
+        min_sitelinks, start_year, end_year, description=True,
+    )
+
+
 def year_windows(start: int, end: int, size: int) -> List[Tuple[int, int]]:
     windows = []
     year = start
@@ -318,15 +425,17 @@ def bindings_to_rows(kind: str, bindings: Iterable[Dict[str, Any]]) -> List[Dict
     rows = []
     for b in bindings:
         label = b.get("itemLabel", {}).get("value", "")
-        rows.append(
-            {
-                "qid": _qid(b["item"]["value"]),
-                "label": label,
-                "date": b["date"]["value"][:10],
-                "sl": int(b["sl"]["value"]),
-                "occ": _qid(b["occ"]["value"]) if "occ" in b else None,
-            }
-        )
+        row = {
+            "qid": _qid(b["item"]["value"]),
+            "label": label,
+            "date": b["date"]["value"][:10],
+            "sl": int(b["sl"]["value"]),
+            "occ": _qid(b["occ"]["value"]) if "occ" in b else None,
+        }
+        description = b.get("itemDescription", {}).get("value", "")
+        if description:  # only the kinds that select it (space, company, invention)
+            row["desc"] = description
+        rows.append(row)
     return rows
 
 
@@ -347,6 +456,21 @@ def _cache_path(cache_dir: Path, kind: str, start: int, end: int, tag: str = "")
     return cache_dir / f"{kind}{middle}_{start}_{end}.json"
 
 
+def _kind_query(kind: str, min_sitelinks: int, start: int, end: int,
+                occupations: Optional[List[Tuple[str, str]]] = None) -> str:
+    if kind == "film":
+        return build_release_query("Q11424", min_sitelinks, start, end)
+    if kind == "game":
+        return build_release_query("Q7889", min_sitelinks, start, end)
+    if kind == "birth":
+        return build_birth_query(min_sitelinks, start, end, occupations)
+    builders = {
+        "tv": build_tv_query, "console": build_console_query, "space": build_space_query,
+        "company": build_company_query, "invention": build_invention_query,
+    }
+    return builders[kind](min_sitelinks, start, end)
+
+
 def fetch_wikidata(
     cache_dir: Path,
     contact: str,
@@ -363,29 +487,28 @@ def fetch_wikidata(
 ) -> int:
     """Fetch any missing year windows into cache_dir. Returns number fetched.
 
-    kinds limits what is fetched (default: film, game, birth), since gives the
-    earliest year per kind (see DEFAULT_SINCE) and occupations narrows the
-    birthday query (default: every entry in BIRTH_OCCUPATIONS).
+    kinds limits what is fetched (default: film, game, birth; the newer kinds in
+    EXTRA_KINDS are opt-in), since gives the earliest year per kind (see
+    DEFAULT_SINCE) and occupations narrows the birthday query (default: every
+    entry in BIRTH_OCCUPATIONS). min_sitelinks may omit kinds; DEFAULT_MIN_SITELINKS
+    fills the gaps.
     """
     this_year = this_year or datetime.now().year
     cache_dir.mkdir(parents=True, exist_ok=True)
     wanted = set(kinds) if kinds is not None else set(WIKIDATA_KINDS)
     first_year = {**DEFAULT_SINCE, **(since or {})}
+    mins = {**DEFAULT_MIN_SITELINKS, **min_sitelinks}
     birth_tag = _occupation_tag(occupations)
 
     jobs = []
-    if "film" in wanted:
-        for start, end in year_windows(first_year["film"], this_year, window_size):
-            jobs.append(("film", start, end, "",
-                         build_release_query("Q11424", min_sitelinks["film"], start, end)))
-    if "game" in wanted:
-        for start, end in year_windows(first_year["game"], this_year, window_size):
-            jobs.append(("game", start, end, "",
-                         build_release_query("Q7889", min_sitelinks["game"], start, end)))
-    if "birth" in wanted:
-        for start, end in year_windows(first_year["birth"], this_year - 15, window_size):
-            jobs.append(("birth", start, end, birth_tag,
-                         build_birth_query(min_sitelinks["birth"], start, end, occupations)))
+    for kind in ALL_KINDS:  # fixed order: film, game, birth, then the newer kinds
+        if kind not in wanted:
+            continue
+        last_year = this_year - 15 if kind == "birth" else this_year
+        size = window_size * WINDOW_MULTIPLIER.get(kind, 1)
+        for start, end in year_windows(first_year[kind], last_year, size):
+            query = _kind_query(kind, mins[kind], start, end, occupations)
+            jobs.append((kind, start, end, birth_tag if kind == "birth" else "", query))
 
     fetched = 0
     for kind, start, end, tag, query in jobs:
@@ -480,18 +603,105 @@ def _usable_label(row: Dict[str, Any]) -> bool:
     return bool(label) and not re.fullmatch(r"Q\d+", label)  # unlabelled items show as their QID
 
 
+# Missions that ended in tragedy: their launch date must never print as good news.
+_SPACE_DENY = re.compile(
+    r"\b(challenger|columbia|sts-51-l|sts-107|soyuz 1|soyuz 11|soyuz t-10|soyuz ms-10|"
+    r"apollo 1|mars climate orbiter|mars polar lander|phobos-grunt|spaceshiptwo)\b",
+    re.IGNORECASE,
+)
+
+# Inventions/discoveries that are medical or harmful, on top of GRIM_PATTERN.
+_SCIENCE_DENY = re.compile(
+    r"\b(diseases?|virus(?:es)?|syndrome|cancer|infect\w*|toxi\w*|poison\w*|drugs?|opioid\w*|"
+    r"narcotic\w*|tobacco|cigarettes?|pathogen\w*|parasit\w*|bacteri\w*|disorder|illness|"
+    r"epidemic|explosive\w*|dynamite|gunpowder|firearms?)\b",
+    re.IGNORECASE,
+)
+
+# Things in the sky or the ground are discovered; anything else is invented.
+_DISCOVERY_WORDS = re.compile(
+    r"\b(planets?|moons?|satellite|comets?|asteroids?|galax\w*|stars?|nebula\w*|supernova|"
+    r"chemical element|isotopes?|particles?|minerals?|fossils?|species|genus|"
+    r"constellation|ocean|continent|island|river|lake)\b",
+    re.IGNORECASE,
+)
+
+# A company only counts when its description says it is about one of these.
+_COMPANY_ALLOW = re.compile(
+    r"\b(technolog\w*|software|internet|online|computers?|electronics?|semiconductors?|hardware|"
+    r"video games?|gaming|search engine|social (?:network|media)|e-commerce|streaming|animation|"
+    r"film|motion pictures?|studios?|entertainment|media|broadcast\w*|television|toys?|comics?|"
+    r"theme parks?|amusement|telecommunications?|mobile)\b",
+    re.IGNORECASE,
+)
+_COMPANY_CATEGORY_RULES = [
+    ("games", re.compile(r"\b(video games?|gaming)\b", re.IGNORECASE)),
+    ("culture", re.compile(r"\b(toys?|comics?|theme parks?|amusement)\b", re.IGNORECASE)),
+    ("film_tv", re.compile(
+        r"\b(animation|film|motion pictures?|studios?|entertainment|media|broadcast\w*|"
+        r"television|streaming)\b", re.IGNORECASE)),
+]
+
+# Kinds that become On This Day entries: kind -> (category, entry text builder).
+# A category of None means "decide from the row" (see _entry_category).
+_SIMPLE_ENTRY_KINDS = {
+    "film": ("film_tv", "{label} is released."),
+    "game": ("games", "{label} is released."),
+    "tv": ("film_tv", "{label} premieres on TV."),
+    "console": ("games", "{label} is released."),
+    "space": ("science", "{label} launches."),
+}
+ENTRY_KINDS = frozenset(_SIMPLE_ENTRY_KINDS) | {"company", "invention"}
+
+
+def company_category(description: str) -> Optional[str]:
+    """film_tv/games/culture/tech for a tech, media or games company; None for any other business."""
+    if not description or GRIM_PATTERN.search(description) or not _COMPANY_ALLOW.search(description):
+        return None
+    for category, pattern in _COMPANY_CATEGORY_RULES:
+        if pattern.search(description):
+            return category
+    return "tech"
+
+
+def _entry_text_and_category(kind: str, row: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """(text, category) for a cached row, or None when it should not be printed."""
+    label = row["label"]
+    description = row.get("desc", "")
+    if kind in _SIMPLE_ENTRY_KINDS:
+        category, template = _SIMPLE_ENTRY_KINDS[kind]
+        if kind == "space" and (_SPACE_DENY.search(label) or GRIM_PATTERN.search(description)):
+            return None
+        return template.format(label=label), category
+    if kind == "company":
+        category = company_category(description)
+        if category is None or GRIM_PATTERN.search(label):
+            return None
+        return f"{label} is founded.", category
+    if kind == "invention":
+        combined = f"{label} {description}"
+        if GRIM_PATTERN.search(combined) or _SCIENCE_DENY.search(combined):
+            return None
+        verb = "discovered" if _DISCOVERY_WORDS.search(combined) else "invented"
+        return f"{label} is {verb}.", "science"
+    return None
+
+
 def load_wikidata_cache(
     cache_dir: Path = CACHE_DIR,
     kinds: Optional[Iterable[str]] = None,
     since: Optional[Dict[str, int]] = None,
     occupations: Optional[List[Tuple[str, str]]] = None,
+    today: Optional[date] = None,
 ) -> List[Entry]:
-    """Cached films and video games as On This Day entries.
+    """Cached films, games, TV, consoles, launches, companies and inventions as entries.
 
     Births are not returned here; they go to their own file (load_birth_rows).
+    Rows dated after `today` (announced but not yet released) are skipped.
     """
-    wanted = (set(kinds) if kinds is not None else set(WIKIDATA_KINDS)) & {"film", "game"}
+    wanted = (set(kinds) if kinds is not None else set(WIKIDATA_KINDS)) & ENTRY_KINDS
     best = _best_cache_rows(cache_dir, wanted, since, occupations)
+    today = today or date.today()
 
     entries: List[Entry] = []
     for (kind, _qid_value), row in best.items():
@@ -501,11 +711,16 @@ def load_wikidata_cache(
             when = date.fromisoformat(row["date"])
         except ValueError:
             continue
+        if when > today:
+            continue
+        built = _entry_text_and_category(kind, row)
+        if built is None:
+            continue
+        text, category = built
         entries.append(
-            {"m": when.month, "d": when.day, "y": when.year,
-             "c": "film_tv" if kind == "film" else "games",
+            {"m": when.month, "d": when.day, "y": when.year, "c": category,
              "s": min(88, round(25 + row["sl"] * 0.35)),
-             "t": f"{row['label']} is released.", "src": "wikidata"}
+             "t": text, "src": "wikidata"}
         )
     return entries
 
@@ -646,23 +861,28 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--min-sitelinks-game", type=int, default=30)
     p.add_argument("--min-sitelinks-birth", type=int, default=60)
     p.add_argument("--wikidata-kinds", default=",".join(WIKIDATA_KINDS), metavar="LIST",
-                   help="Comma-separated Wikidata kinds to fetch and merge: film, game, birth "
-                        "(default: all three)")
+                   help="Comma-separated Wikidata kinds to fetch and merge: "
+                        + ", ".join(ALL_KINDS) + " (default: " + ", ".join(WIKIDATA_KINDS) + ")")
     p.add_argument("--film-since", type=int, default=DEFAULT_SINCE["film"], metavar="YEAR",
                    help="Earliest film release year (default: %(default)s)")
     p.add_argument("--game-since", type=int, default=DEFAULT_SINCE["game"], metavar="YEAR",
                    help="Earliest video game release year (default: %(default)s)")
     p.add_argument("--birth-since", type=int, default=DEFAULT_SINCE["birth"], metavar="YEAR",
                    help="Earliest birth year (default: %(default)s)")
+    for kind in EXTRA_KINDS:
+        p.add_argument(f"--{kind}-since", type=int, default=DEFAULT_SINCE[kind], metavar="YEAR",
+                       help=f"Earliest {kind} year (default: %(default)s)")
+        p.add_argument(f"--min-sitelinks-{kind}", type=int, default=DEFAULT_MIN_SITELINKS[kind],
+                       help=f"Fame cut-off for {kind} (default: %(default)s)")
     p.add_argument("--birth-occupations", default="all", metavar="LIST",
                    help="Comma-separated occupations for birthdays, or 'all' (default). "
                         "Choices: " + ", ".join(name for _, name in BIRTH_OCCUPATIONS))
     args = p.parse_args(argv)
 
     kinds = [k.strip() for k in args.wikidata_kinds.split(",") if k.strip()]
-    bad_kinds = [k for k in kinds if k not in WIKIDATA_KINDS]
+    bad_kinds = [k for k in kinds if k not in ALL_KINDS]
     if bad_kinds or not kinds:
-        p.error(f"--wikidata-kinds must be a comma-separated subset of {', '.join(WIKIDATA_KINDS)}")
+        p.error(f"--wikidata-kinds must be a comma-separated subset of {', '.join(ALL_KINDS)}")
     args.wikidata_kinds = kinds
 
     if args.birth_occupations.strip().lower() == "all":
@@ -697,11 +917,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     since = {"film": args.film_since, "game": args.game_since, "birth": args.birth_since}
+    mins = {"film": args.min_sitelinks_film, "game": args.min_sitelinks_game,
+            "birth": args.min_sitelinks_birth}
+    for kind in EXTRA_KINDS:
+        since[kind] = getattr(args, f"{kind}_since")
+        mins[kind] = getattr(args, f"min_sitelinks_{kind}")
 
     if args.fetch_wikidata:
         count = fetch_wikidata(
-            args.cache_dir, args.contact,
-            {"film": args.min_sitelinks_film, "game": args.min_sitelinks_game, "birth": args.min_sitelinks_birth},
+            args.cache_dir, args.contact, mins,
             window_size=args.window_years, delay=args.delay, refresh=args.refresh,
             kinds=args.wikidata_kinds, since=since, occupations=args.birth_occupations,
         )
