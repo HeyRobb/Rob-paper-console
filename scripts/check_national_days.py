@@ -8,15 +8,19 @@ installing, and whenever the receipt starts saying it "couldn't load" the days:
 
     ./.venv/bin/python scripts/check_national_days.py
     ./.venv/bin/python scripts/check_national_days.py --count 5 --ideas 4
+    ./.venv/bin/python scripts/check_national_days.py --upcoming 5
     ./.venv/bin/python scripts/check_national_days.py --save-html /tmp/nt
 
 It runs the module's real fetch and parse path, lists every holiday it found for
 today, and shows the receipt as plain text. --save-html also keeps the raw pages
 so a parsing problem can be inspected without fetching again. At most 1 + count
-pages are requested, the same as one print.
+pages are requested, the same as one print. --upcoming N (3 to 5) also tries the
+"Upcoming Days" section, which reads the site's page for tomorrow, the day after,
+and so on (at most a week of them).
 
 Exit status: 0 = receipt would print, 1 = a page could not be fetched,
-2 = fetched but the holiday list could not be found in it.
+2 = fetched but the holiday list could not be found in it,
+3 = today's list is fine but the upcoming days could not be loaded or understood.
 """
 
 import argparse
@@ -78,8 +82,14 @@ def main() -> int:
         help="leave a category out, like ticking its Skip checkbox; repeatable, e.g. --skip cause "
         "--skip 'food & beverage'. One of: " + ", ".join(sorted(nd.CATEGORY_LABELS)),
     )
+    parser.add_argument(
+        "--upcoming", type=int, default=0, metavar="N",
+        help=f"also show the Upcoming Days section with N days ({nd.MIN_UPCOMING} to {nd.MAX_UPCOMING})",
+    )
     parser.add_argument("--save-html", metavar="DIR", help="also save each fetched page here")
     args = parser.parse_args()
+    if args.upcoming and not nd.MIN_UPCOMING <= args.upcoming <= nd.MAX_UPCOMING:
+        parser.error(f"--upcoming must be between {nd.MIN_UPCOMING} and {nd.MAX_UPCOMING}")
 
     save_dir = Path(args.save_html) if args.save_html else None
     if save_dir:
@@ -142,16 +152,35 @@ def main() -> int:
         print("If one of those headings is the ideas section, add its wording to _CELEBRATE_HEADING in")
         print("app/modules/national_days.py. (--save-html DIR keeps the pages so you can look at them.)")
 
+    upcoming_failed = False
+    if args.upcoming:
+        upcoming_started = time.monotonic()
+        upcoming = nd.load_upcoming_days(day, args.upcoming, frozenset(args.skip))
+        upcoming_seconds = time.monotonic() - upcoming_started
+        print(f"\nUpcoming days (arts, food and fun only), found in {upcoming_seconds:.1f} s:")
+        if upcoming is None:
+            upcoming_failed = True
+            print("  none of the date pages could be loaded or understood (see the fetch lines above).")
+            print("  Re-run with --save-html DIR; a date page should have an 'All holidays on <date>' heading.")
+        elif not upcoming:
+            print(f"  the date pages loaded, but none of the next {nd.UPCOMING_LOOKAHEAD_DAYS} days has an arts, food or fun day.")
+        for item in upcoming or []:
+            print(f"  {nd._day_line(item['date'], item['category']):<36} {item['name']}")
+
     print("\nReceipt as it would print:")
     config = {
         "count": args.count,
         "ideas": args.ideas,
         "keep_page_order": args.keep_page_order,
+        "show_upcoming": bool(args.upcoming),
+        "upcoming_count": args.upcoming or nd.DEFAULT_UPCOMING,
         **{key: True for label, key, _title in nd.CATEGORIES if label in args.skip},
     }
     nd.format_national_days_receipt(_TextPrinter(), config, None)
     print(f"\nTime this adds to a print: {load_seconds:.1f} s the first time each day, then none (cached).")
-    return 0
+    if args.upcoming:
+        print(f"The Upcoming Days section adds {upcoming_seconds:.1f} s the first time each day, then none (cached).")
+    return 3 if upcoming_failed else 0
 
 
 if __name__ == "__main__":
