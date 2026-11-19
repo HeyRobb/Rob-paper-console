@@ -23,7 +23,7 @@ MIN_DATES = 3  # dates listed
 DEFAULT_DATES = 7  # a week ahead
 MAX_DATES = 7
 DEFAULT_PER_DATE = 2  # days listed under each date
-MAX_PER_DATE = 5
+MAX_PER_DATE = 15  # the busiest dates (April 1 has 14 arts, food and fun days) fit in full
 ICON = "calendar-star"
 
 # Only the categories this module lists get a "Skip" box.
@@ -68,7 +68,10 @@ def _range_caption(groups: List[Dict[str, Any]]) -> str:
             "per_day": {
                 "type": "integer",
                 "title": "Days per Date",
-                "description": "The most national days listed under each date (arts first, then food, then fun).",
+                "description": (
+                    "The most national days listed under each date. A date with more is cut from the end: "
+                    "arts days come first, then food, then fun. Most dates have 3 to 6; a few have 10 or more."
+                ),
                 "default": DEFAULT_PER_DATE,
                 "minimum": 1,
                 "maximum": MAX_PER_DATE,

@@ -66,7 +66,7 @@ def test_a_week_of_dates_and_two_days_each_are_the_defaults_with_limits_of_three
     assert (dates["minimum"], dates["default"], dates["maximum"]) == (3, 7, 7)
     per_date = props["per_day"]
     assert per_date["title"] == "Days per Date"
-    assert (per_date["minimum"], per_date["default"], per_date["maximum"]) == (1, 2, 5)
+    assert (per_date["minimum"], per_date["default"], per_date["maximum"]) == (1, 2, 15)
     assert dates["description"] and per_date["description"]
 
 
@@ -83,9 +83,9 @@ def test_only_the_three_listed_categories_get_a_skip_box_and_all_start_unticked(
 def test_the_config_is_validated():
     module_registry.validate_module_config("upcoming_days", {})
     module_registry.validate_module_config("upcoming_days", {"count": 3, "per_day": 1, "exclude_fun": True})
-    module_registry.validate_module_config("upcoming_days", {"count": 7, "per_day": 5})
+    module_registry.validate_module_config("upcoming_days", {"count": 7, "per_day": 15})
     for bad in (
-        {"count": 2}, {"count": 8}, {"per_day": 0}, {"per_day": 6}, {"count": "week"}, {"exclude_fun": "yes"},
+        {"count": 2}, {"count": 8}, {"per_day": 0}, {"per_day": 16}, {"count": "week"}, {"exclude_fun": "yes"},
     ):
         with pytest.raises(ValueError):
             module_registry.validate_module_config("upcoming_days", bad)
@@ -209,9 +209,9 @@ def test_the_number_of_dates_is_kept_between_three_and_seven(site, asked, dates)
     assert len(_bolds(_print({"count": asked}))) == dates
 
 
-@pytest.mark.parametrize("asked, per_date", [(1, 1), (3, 3), (5, 5), (9, 5), (0, 1), ("lots", 2)])
-def test_the_number_of_days_under_each_date_is_kept_between_one_and_five(site, asked, per_date):
-    _add_date_pages(site, _busy(per_date=7))
+@pytest.mark.parametrize("asked, per_date", [(1, 1), (3, 3), (5, 5), (14, 14), (15, 15), (16, 15), (99, 15), (0, 1), ("lots", 2)])
+def test_the_number_of_days_under_each_date_is_kept_between_one_and_fifteen(site, asked, per_date):
+    _add_date_pages(site, _busy(per_date=20))
 
     calls = _print({"count": 3, "per_day": asked})
 
@@ -418,3 +418,39 @@ def test_a_saved_national_days_config_with_the_old_upcoming_settings_still_valid
 
     assert ("bold", "UPCOMING DAYS") not in printer.calls
     assert not [url for url in site.urls if nd._is_date_url(url)]
+
+
+# ---- busy dates -------------------------------------------------------------------------
+
+
+def _april_first():
+    """A date shaped like nationaltoday.com's April 1: 6 arts, 2 food and 6 fun days, among others."""
+    arts = [(f"arts-{n}", f"Arts Day {n}", "Arts &amp; Entertainment") for n in range(1, 7)]
+    food = [(f"food-{n}", f"Food Day {n}", "Food &amp; Beverage") for n in range(1, 3)]
+    fun = [(f"fun-{n}", f"Fun Day {n}", "Fun") for n in range(1, 7)]
+    other = [("april-fools", "April Fools' Day", "Special Interest"), ("serious", "Serious Day", "Cause")]
+    return {date(2026, 11, 20): fun + other + food + arts}  # the page order is deliberately not arts-first
+
+
+def test_a_date_with_fourteen_matching_days_prints_all_of_them_at_the_highest_setting(site):
+    _add_date_pages(site, _april_first())
+
+    shown = [c[1] for c in _print({"count": 3, "per_day": 15}) if c[0] == "body"]
+
+    assert len(shown) == 14
+    assert shown == [f"Arts Day {n}" for n in range(1, 7)] + [f"Food Day {n}" for n in (1, 2)] + [f"Fun Day {n}" for n in range(1, 7)]
+    assert "April Fools' Day" not in shown and "Serious Day" not in shown
+
+
+def test_a_date_with_more_days_than_the_setting_is_cut_from_the_end_so_fun_days_go_first(site):
+    _add_date_pages(site, _april_first())
+
+    shown = [c[1] for c in _print({"count": 3, "per_day": 8}) if c[0] == "body"]
+
+    assert shown == [f"Arts Day {n}" for n in range(1, 7)] + ["Food Day 1", "Food Day 2"]
+
+
+def test_the_setting_explains_that_a_busy_date_is_cut_from_the_end():
+    spec = module_registry.get_module("upcoming_days").config_schema["properties"]["per_day"]
+
+    assert "cut from the end" in spec["description"] and "fun" in spec["description"]
