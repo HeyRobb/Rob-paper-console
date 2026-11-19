@@ -55,11 +55,13 @@ MAX_COUNT = 5
 DEFAULT_IDEAS = 2
 MAX_IDEAS = 10
 
-# "Upcoming Days": the next few days' arts, food and fun holidays, name/date/category only.
-MIN_UPCOMING = 3
+# "Upcoming Days": the next few dates' arts, food and fun holidays, name and category under a date heading.
+MIN_UPCOMING = 3  # dates listed
 DEFAULT_UPCOMING = 3
 MAX_UPCOMING = 5
-UPCOMING_LOOKAHEAD_DAYS = 7  # date pages looked at, tomorrow onwards, before giving up
+DEFAULT_UPCOMING_PER_DAY = 2  # holidays listed under each date
+MAX_UPCOMING_PER_DAY = 5
+UPCOMING_LOOKAHEAD_DAYS = 7  # date pages looked at, tomorrow onwards, to find the dates to list
 UPCOMING_BUDGET_SECONDS = 20
 UPCOMING_CATEGORIES = ("arts & entertainment", "food & beverage", "fun")
 MONTH_SLUGS = (
@@ -413,18 +415,19 @@ def load_national_days(
 
 def load_upcoming_days(
     today: date,
-    count: int,
+    days: int,
+    per_day: int,
     skip_categories: frozenset = frozenset(),
     lookahead: int = UPCOMING_LOOKAHEAD_DAYS,
 ) -> Optional[List[Dict[str, Any]]]:
-    """The next arts, food and fun holidays after today: [{"name", "url", "category", "date"}].
+    """The next dates with arts, food or fun holidays: [{"date", "holidays": [{"name", "url", "category"}]}].
 
     Looks at the site's page for tomorrow, then the day after, and so on (at most
-    `lookahead` dates) until `count` matching holidays are found, so a busy tomorrow
-    costs a single request. Results are in date order; within a date, arts come before
-    food before fun, then the site's order. Categories ticked in the "Skip ..."
-    checkboxes are left out. Each date page is kept in memory until that date has
-    passed, so repeat prints cost nothing.
+    `lookahead` dates), until `days` dates that have a matching holiday are found, so
+    a date with nothing fun is simply left out. Under each date go at most `per_day`
+    holidays: arts before food before fun, then the site's order. Categories ticked in
+    the "Skip ..." checkboxes are left out. Each date page is kept in memory until that
+    date has passed, so repeat prints cost nothing.
 
     Returns None when no date page could be loaded or understood, and [] when pages
     loaded but nothing matched. A page that fails is not cached, and a failure after
@@ -439,12 +442,12 @@ def load_upcoming_days(
         for stale in [d for d in _upcoming_cache if d <= today]:
             del _upcoming_cache[stale]
 
-    found: List[Dict[str, Any]] = []
+    groups: List[Dict[str, Any]] = []
     seen_urls = set()
     loaded_any = False
     fetched_any = False
     for offset in range(1, lookahead + 1):
-        if len(found) >= count:
+        if len(groups) >= days:
             break
         day = today + timedelta(days=offset)
         with _cache_lock:
@@ -463,12 +466,11 @@ def load_upcoming_days(
                 _upcoming_cache[day] = holidays
         loaded_any = True
         matching = [h for h in holidays if h["category"] in allowed and h["url"] not in seen_urls]
-        for holiday in sorted(matching, key=_fun_rank):  # stable: ties keep the site's order
-            seen_urls.add(holiday["url"])
-            found.append({**holiday, "date": day})
-    if not loaded_any:
-        return None
-    return found[:count]
+        chosen = sorted(matching, key=_fun_rank)[:per_day]  # stable: ties keep the site's order
+        if chosen:
+            seen_urls.update(h["url"] for h in chosen)
+            groups.append({"date": day, "holidays": chosen})
+    return groups if loaded_any else None
 
 
 # ---- receipt ---------------------------------------------------------------
@@ -495,10 +497,16 @@ def _day_line(target_date: date, category: str | None) -> str:
     return " - ".join(part for part in parts if part)
 
 
+def _upcoming_heading(day: date) -> str:
+    """Bold line above each upcoming date's holidays, e.g. "Fri, Nov 20"."""
+    return f"{day:%a}, {day:%b} {day.day}"
+
+
 def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
     """Prints the "Upcoming Days" section; True when it printed anything from the site."""
-    count = _resolve_int(config, "upcoming_count", DEFAULT_UPCOMING, MAX_UPCOMING, MIN_UPCOMING)
-    upcoming = load_upcoming_days(target_date, count, _skipped_categories(config))
+    days = _resolve_int(config, "upcoming_count", DEFAULT_UPCOMING, MAX_UPCOMING, MIN_UPCOMING)
+    per_day = _resolve_int(config, "upcoming_per_day", DEFAULT_UPCOMING_PER_DAY, MAX_UPCOMING_PER_DAY)
+    upcoming = load_upcoming_days(target_date, days, per_day, _skipped_categories(config))
 
     printer.feed(1)  # a gap, a dashed line and a bold title set the section apart from today's list
     printer.print_line()
@@ -510,9 +518,11 @@ def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
         printer.print_body("Nothing matching in the")
         printer.print_body(f"next {UPCOMING_LOOKAHEAD_DAYS} days.")
         return False
-    for item in upcoming:
-        printer.print_body(item["name"])
-        printer.print_caption(_day_line(item["date"], item["category"]))
+    for group in upcoming:
+        printer.print_bold(_upcoming_heading(group["date"]))
+        for holiday in group["holidays"]:
+            printer.print_body(holiday["name"])
+            printer.print_caption(_category_title(holiday["category"]))
     return True
 
 
@@ -555,11 +565,22 @@ def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
             },
             "upcoming_count": {
                 "type": "integer",
-                "title": "Upcoming Days to Show",
-                "description": f"Used when upcoming days are shown. Looks up to {UPCOMING_LOOKAHEAD_DAYS} days ahead.",
+                "title": "Upcoming Dates to Show",
+                "description": (
+                    "Used when upcoming days are shown: how many dates to list. A date with no arts, "
+                    f"food or fun day is left out; looks up to {UPCOMING_LOOKAHEAD_DAYS} days ahead."
+                ),
                 "default": DEFAULT_UPCOMING,
                 "minimum": MIN_UPCOMING,
                 "maximum": MAX_UPCOMING,
+            },
+            "upcoming_per_day": {
+                "type": "integer",
+                "title": "Days per Upcoming Date",
+                "description": "The most days listed under each upcoming date (arts first, then food, then fun).",
+                "default": DEFAULT_UPCOMING_PER_DAY,
+                "minimum": 1,
+                "maximum": MAX_UPCOMING_PER_DAY,
             },
             "keep_page_order": {
                 "type": "boolean",

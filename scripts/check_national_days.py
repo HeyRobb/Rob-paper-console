@@ -15,8 +15,8 @@ It runs the module's real fetch and parse path, lists every holiday it found for
 today, and shows the receipt as plain text. --save-html also keeps the raw pages
 so a parsing problem can be inspected without fetching again. At most 1 + count
 pages are requested, the same as one print. --upcoming N (3 to 5) also tries the
-"Upcoming Days" section, which reads the site's page for tomorrow, the day after,
-and so on (at most a week of them).
+"Upcoming Days" section, which lists N upcoming dates by reading the site's page
+for tomorrow, the day after, and so on (at most a week of them).
 
 Exit status: 0 = receipt would print, 1 = a page could not be fetched,
 2 = fetched but the holiday list could not be found in it,
@@ -84,12 +84,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--upcoming", type=int, default=0, metavar="N",
-        help=f"also show the Upcoming Days section with N days ({nd.MIN_UPCOMING} to {nd.MAX_UPCOMING})",
+        help=f"also show the Upcoming Days section with N dates ({nd.MIN_UPCOMING} to {nd.MAX_UPCOMING})",
+    )
+    parser.add_argument(
+        "--upcoming-per-day", type=int, default=nd.DEFAULT_UPCOMING_PER_DAY, metavar="M",
+        help="most days listed under each upcoming date, 1 to %d (default %%(default)s)" % nd.MAX_UPCOMING_PER_DAY,
     )
     parser.add_argument("--save-html", metavar="DIR", help="also save each fetched page here")
     args = parser.parse_args()
     if args.upcoming and not nd.MIN_UPCOMING <= args.upcoming <= nd.MAX_UPCOMING:
         parser.error(f"--upcoming must be between {nd.MIN_UPCOMING} and {nd.MAX_UPCOMING}")
+    if not 1 <= args.upcoming_per_day <= nd.MAX_UPCOMING_PER_DAY:
+        parser.error(f"--upcoming-per-day must be between 1 and {nd.MAX_UPCOMING_PER_DAY}")
 
     save_dir = Path(args.save_html) if args.save_html else None
     if save_dir:
@@ -155,17 +161,18 @@ def main() -> int:
     upcoming_failed = False
     if args.upcoming:
         upcoming_started = time.monotonic()
-        upcoming = nd.load_upcoming_days(day, args.upcoming, frozenset(args.skip))
+        upcoming = nd.load_upcoming_days(day, args.upcoming, args.upcoming_per_day, frozenset(args.skip))
         upcoming_seconds = time.monotonic() - upcoming_started
-        print(f"\nUpcoming days (arts, food and fun only), found in {upcoming_seconds:.1f} s:")
+        print(f"\nUpcoming dates (arts, food and fun only), found in {upcoming_seconds:.1f} s:")
         if upcoming is None:
             upcoming_failed = True
             print("  none of the date pages could be loaded or understood (see the fetch lines above).")
             print("  Re-run with --save-html DIR; a date page should have an 'All holidays on <date>' heading.")
         elif not upcoming:
             print(f"  the date pages loaded, but none of the next {nd.UPCOMING_LOOKAHEAD_DAYS} days has an arts, food or fun day.")
-        for item in upcoming or []:
-            print(f"  {nd._day_line(item['date'], item['category']):<36} {item['name']}")
+        for group in upcoming or []:
+            for holiday in group["holidays"]:
+                print(f"  {nd._upcoming_heading(group['date']):<12} [{holiday['category']:<20}] {holiday['name']}")
 
     print("\nReceipt as it would print:")
     config = {
@@ -174,6 +181,7 @@ def main() -> int:
         "keep_page_order": args.keep_page_order,
         "show_upcoming": bool(args.upcoming),
         "upcoming_count": args.upcoming or nd.DEFAULT_UPCOMING,
+        "upcoming_per_day": args.upcoming_per_day,
         **{key: True for label, key, _title in nd.CATEGORIES if label in args.skip},
     }
     nd.format_national_days_receipt(_TextPrinter(), config, None)

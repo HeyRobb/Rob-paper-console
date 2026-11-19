@@ -923,61 +923,93 @@ def test_links_to_other_dates_are_never_holidays_but_their_pages_may_be_fetched(
     assert not nd._is_date_url("https://nationaltoday.com/national-pie-day/")
 
 
-def test_upcoming_starts_tomorrow_and_keeps_only_arts_food_and_fun_in_date_order(site):
+def _shown(groups):
+    """[(day of month, [names])] for a load_upcoming_days result."""
+    return [(g["date"].day, [h["name"] for h in g["holidays"]]) for g in groups]
+
+
+def test_upcoming_starts_tomorrow_and_lists_only_arts_food_and_fun_under_each_date(site):
     _add_date_pages(site)
 
-    days = nd.load_upcoming_days(TODAY, count=4)
+    groups = nd.load_upcoming_days(TODAY, days=3, per_day=5)
 
-    assert [(d["name"], d["date"].day, d["category"]) for d in days] == [
-        ("National Peanut Butter Fudge Day", 20, "food & beverage"),
-        ("National Absurdity Day", 20, "fun"),
-        ("National Movie Day", 21, "arts & entertainment"),
-        ("National Stuffing Day", 21, "food & beverage"),
+    assert _shown(groups) == [
+        (20, ["National Peanut Butter Fudge Day", "National Absurdity Day"]),
+        (21, ["National Movie Day", "National Stuffing Day"]),
+        (22, ["National Cranberry Relish Day", "Go For A Ride Day"]),
     ]
-    assert all(d["url"].startswith("https://nationaltoday.com/") for d in days)
+    assert [h["category"] for h in groups[0]["holidays"]] == ["food & beverage", "fun"]
+    assert all(h["url"].startswith("https://nationaltoday.com/") for g in groups for h in g["holidays"])
 
 
-def test_upcoming_stops_requesting_pages_once_it_has_enough(site):
+def test_each_upcoming_date_is_capped_at_the_per_day_setting_best_categories_first(site):
     _add_date_pages(site)
 
-    enough_from_tomorrow = nd.load_upcoming_days(TODAY, count=2)
-    assert len(enough_from_tomorrow) == 2 and site.urls == _date_urls(20)
+    groups = nd.load_upcoming_days(TODAY, days=3, per_day=1)
+
+    assert _shown(groups) == [
+        (20, ["National Peanut Butter Fudge Day"]),
+        (21, ["National Movie Day"]),
+        (22, ["National Cranberry Relish Day"]),
+    ]
+
+
+def test_upcoming_covers_the_number_of_dates_asked_for_not_the_number_of_holidays(site):
+    _add_date_pages(site)
+
+    groups = nd.load_upcoming_days(TODAY, days=3, per_day=2)
+
+    assert len(groups) == 3 and [g["date"].day for g in groups] == [20, 21, 22]
+
+
+def test_upcoming_stops_requesting_pages_once_it_has_enough_dates(site):
+    _add_date_pages(site)
+
+    assert len(nd.load_upcoming_days(TODAY, days=1, per_day=5)) == 1
+    assert site.urls == _date_urls(20)
 
     nd._reset_cache()
     site.calls.clear()
-    nd.load_upcoming_days(TODAY, count=3)
-    assert site.urls == _date_urls(20, 21)
+    nd.load_upcoming_days(TODAY, days=3, per_day=5)
+    assert site.urls == _date_urls(20, 21, 22)
 
 
-def test_upcoming_never_returns_more_than_asked_for(site):
-    _add_date_pages(site)
+def test_a_date_with_nothing_fun_is_left_out_and_the_next_one_takes_its_place(site):
+    pages = dict(NEXT_DAYS)
+    pages[date(2026, 11, 21)] = [("serious-day", "Serious Day", "Cause")]
+    _add_date_pages(site, pages)
 
-    assert len(nd.load_upcoming_days(TODAY, count=3)) == 3
-    assert len(nd.load_upcoming_days(TODAY, count=1)) == 1
+    groups = nd.load_upcoming_days(TODAY, days=3, per_day=1)
+
+    assert [g["date"].day for g in groups] == [20, 22, 23]
+    assert site.urls == _date_urls(20, 21, 22, 23)
 
 
 def test_upcoming_respects_the_skip_checkboxes(site):
     _add_date_pages(site)
 
-    days = nd.load_upcoming_days(TODAY, count=5, skip_categories=frozenset({"fun", "cause"}))
+    groups = nd.load_upcoming_days(TODAY, days=3, per_day=5, skip_categories=frozenset({"fun", "cause"}))
 
-    assert "fun" not in {d["category"] for d in days}
-    assert [d["name"] for d in days][:2] == ["National Peanut Butter Fudge Day", "National Movie Day"]
+    assert _shown(groups) == [
+        (20, ["National Peanut Butter Fudge Day"]),
+        (21, ["National Movie Day", "National Stuffing Day"]),
+        (22, ["National Cranberry Relish Day"]),
+    ]
 
 
 def test_upcoming_makes_no_requests_when_arts_food_and_fun_are_all_skipped(site):
     _add_date_pages(site)
 
-    days = nd.load_upcoming_days(TODAY, count=3, skip_categories=frozenset(nd.UPCOMING_CATEGORIES))
+    groups = nd.load_upcoming_days(TODAY, days=3, per_day=2, skip_categories=frozenset(nd.UPCOMING_CATEGORIES))
 
-    assert days == [] and site.urls == []
+    assert groups == [] and site.urls == []
 
 
 def test_upcoming_looks_a_week_ahead_at_most_then_gives_up_with_an_empty_list(site):
     boring = {date(2026, 11, d): [("serious-day", "Serious Day", "Cause")] for d in range(20, 28)}
     _add_date_pages(site, boring)
 
-    assert nd.load_upcoming_days(TODAY, count=3) == []
+    assert nd.load_upcoming_days(TODAY, days=3, per_day=2) == []
     assert site.urls == _date_urls(20, 21, 22, 23, 24, 25, 26)  # seven dates, never the eighth
 
 
@@ -985,33 +1017,33 @@ def test_upcoming_returns_what_it_found_when_a_later_date_page_fails(site):
     _add_date_pages(site)
     site.pages[nd._date_url(date(2026, 11, 21))] = 500
 
-    days = nd.load_upcoming_days(TODAY, count=4)
+    groups = nd.load_upcoming_days(TODAY, days=3, per_day=1)
 
-    assert [d["date"].day for d in days] == [20, 20, 22, 22]
+    assert [g["date"].day for g in groups] == [20, 22, 23]
 
 
 def test_upcoming_is_none_when_no_date_page_can_be_loaded_and_is_retried_next_time(site):
-    assert nd.load_upcoming_days(TODAY, count=3) is None  # the fake site has no date pages at all
+    assert nd.load_upcoming_days(TODAY, days=3, per_day=2) is None  # the fake site has no date pages at all
 
     _add_date_pages(site)
-    assert len(nd.load_upcoming_days(TODAY, count=3)) == 3
+    assert len(nd.load_upcoming_days(TODAY, days=3, per_day=2)) == 3
 
 
 def test_a_date_page_without_the_holiday_list_heading_counts_as_failed(site):
     site.pages[nd._date_url(date(2026, 11, 20))] = "<h2>Redesigned</h2><a href='/some-day/'>Some Day</a>"
 
-    assert nd.load_upcoming_days(TODAY, count=3, lookahead=1) is None
+    assert nd.load_upcoming_days(TODAY, days=3, per_day=2, lookahead=1) is None
 
 
 def test_upcoming_pages_are_cached_until_their_date_has_passed(site):
     _add_date_pages(site)
-    nd.load_upcoming_days(TODAY, count=3)
+    nd.load_upcoming_days(TODAY, days=3, per_day=2)
     fetched = len(site.calls)
 
-    nd.load_upcoming_days(TODAY, count=3)
+    nd.load_upcoming_days(TODAY, days=3, per_day=2)
     assert len(site.calls) == fetched  # second print costs nothing
 
-    nd.load_upcoming_days(date(2026, 11, 20), count=2)  # tomorrow became today: its page is dropped
+    nd.load_upcoming_days(date(2026, 11, 20), days=3, per_day=2)  # tomorrow became today: its page is dropped
     assert date(2026, 11, 20) not in nd._upcoming_cache
     assert date(2026, 11, 21) in nd._upcoming_cache
 
@@ -1020,26 +1052,29 @@ def test_the_same_holiday_listed_on_two_dates_is_only_returned_once(site):
     twice = [("long-running-fun-day", "Long Running Fun Day", "Fun")]
     _add_date_pages(site, {date(2026, 11, 20): twice, date(2026, 11, 21): twice + NEXT_DAYS[date(2026, 11, 21)]})
 
-    names = [d["name"] for d in nd.load_upcoming_days(TODAY, count=5)]
+    groups = nd.load_upcoming_days(TODAY, days=2, per_day=5)
+    names = [h["name"] for g in groups for h in g["holidays"]]
 
     assert names.count("Long Running Fun Day") == 1
+    assert [g["date"].day for g in groups] == [20, 21]
 
 
 def test_upcoming_rolls_over_month_and_year_ends(site):
     site.pages[nd._date_url(date(2026, 12, 31))] = _date_page("December 31", [("a-fun-day", "A Fun Day", "Fun")])
     site.pages[nd._date_url(date(2027, 1, 1))] = _date_page("January 1", [("b-fun-day", "B Fun Day", "Fun")])
 
-    days = nd.load_upcoming_days(date(2026, 12, 30), count=2)
+    groups = nd.load_upcoming_days(date(2026, 12, 30), days=2, per_day=1)
 
     assert site.urls == ["https://nationaltoday.com/december-31/", "https://nationaltoday.com/january-1/"]
-    assert [(d["date"].month, d["date"].day) for d in days] == [(12, 31), (1, 1)]
+    assert [(g["date"].month, g["date"].day) for g in groups] == [(12, 31), (1, 1)]
 
 
 def test_upcoming_requests_are_modest_and_stay_on_site(site):
     _add_date_pages(site)
 
-    nd.load_upcoming_days(TODAY, count=5)
+    nd.load_upcoming_days(TODAY, days=5, per_day=2)
 
+    assert site.calls
     for call in site.calls:
         parts = urlparse(call["url"])
         assert parts.scheme == "https" and parts.hostname == "nationaltoday.com"
@@ -1052,7 +1087,7 @@ def test_upcoming_stops_when_its_time_budget_is_used_up(site, monkeypatch):
     _add_date_pages(site)
     monkeypatch.setattr(nd, "UPCOMING_BUDGET_SECONDS", 0)
 
-    assert nd.load_upcoming_days(TODAY, count=3) is None
+    assert nd.load_upcoming_days(TODAY, days=3, per_day=2) is None
     assert site.urls == []
 
 
@@ -1065,7 +1100,7 @@ def test_upcoming_is_never_fetched_unless_asked_for(site):
     assert not [url for url in site.urls if nd._is_date_url(url)]
 
 
-def test_receipt_sets_the_upcoming_section_apart_and_prints_only_name_date_and_category(site):
+def test_receipt_puts_a_bold_date_before_each_upcoming_dates_days_and_prints_only_name_and_category(site):
     _add_date_pages(site)
 
     calls = _print({"count": 1, "ideas": 1, "show_upcoming": True})
@@ -1074,27 +1109,65 @@ def test_receipt_sets_the_upcoming_section_apart_and_prints_only_name_date_and_c
     assert calls[start - 2 : start] == [("feed", 1), ("line",)]
     assert calls[start:] == [
         ("bold", "UPCOMING DAYS"),
+        ("bold", "Fri, Nov 20"),
         ("body", "National Peanut Butter Fudge Day"),
-        ("caption", "Nov 20 - Food & Beverage"),
+        ("caption", "Food & Beverage"),
         ("body", "National Absurdity Day"),
-        ("caption", "Nov 20 - Fun"),
+        ("caption", "Fun"),
+        ("bold", "Sat, Nov 21"),
         ("body", "National Movie Day"),
-        ("caption", "Nov 21 - Arts & Entertainment"),
+        ("caption", "Arts & Entertainment"),
+        ("body", "National Stuffing Day"),
+        ("caption", "Food & Beverage"),
+        ("bold", "Sun, Nov 22"),
+        ("body", "National Cranberry Relish Day"),
+        ("caption", "Food & Beverage"),
+        ("body", "Go For A Ride Day"),
+        ("caption", "Fun"),
         ("line",),
         ("caption", "via nationaltoday.com"),
     ]
     assert [c for c in calls if c == ("caption", "via nationaltoday.com")] == [("caption", "via nationaltoday.com")]
 
 
-@pytest.mark.parametrize("asked, printed", [(1, 3), (3, 3), (4, 4), (5, 5), (9, 5), ("many", 3)])
-def test_upcoming_count_is_kept_between_three_and_five(site, asked, printed):
+def test_every_upcoming_name_comes_after_the_bold_date_it_belongs_to(site):
+    _add_date_pages(site)
+
+    calls = _print({"count": 1, "show_upcoming": True, "upcoming_count": 4, "upcoming_per_day": 5})
+
+    start = calls.index(("bold", "UPCOMING DAYS"))
+    assert calls[start + 1][0] == "bold"  # the first thing under the title is a date, never a name
+    names_by_date = {}
+    heading = None
+    for call in calls[start + 1 :]:
+        if call[0] == "bold":
+            heading = call[1]
+        elif call[0] == "body":
+            names_by_date.setdefault(heading, []).append(call[1])
+    assert list(names_by_date) == ["Fri, Nov 20", "Sat, Nov 21", "Sun, Nov 22", "Mon, Nov 23"]
+    assert names_by_date["Mon, Nov 23"] == ["National Espresso Day"]
+
+
+@pytest.mark.parametrize("asked, dates", [(1, 3), (3, 3), (4, 4), (5, 5), (9, 5), ("many", 3)])
+def test_the_number_of_upcoming_dates_is_kept_between_three_and_five(site, asked, dates):
     busy = {date(2026, 11, d): [(f"fun-{d}-{n}", f"Fun {d} {n}", "Fun") for n in range(3)] for d in range(20, 27)}
     _add_date_pages(site, busy)
 
     calls = _print({"count": 1, "show_upcoming": True, "upcoming_count": asked})
 
     start = calls.index(("bold", "UPCOMING DAYS"))
-    assert len([c for c in calls[start:] if c[0] == "body"]) == printed
+    assert len([c for c in calls[start + 1 :] if c[0] == "bold"]) == dates
+
+
+@pytest.mark.parametrize("asked, per_date", [(1, 1), (3, 3), (5, 5), (9, 5), (0, 1), ("lots", 2)])
+def test_the_number_of_days_under_each_upcoming_date_is_kept_between_one_and_five(site, asked, per_date):
+    busy = {date(2026, 11, d): [(f"fun-{d}-{n}", f"Fun {d} {n}", "Fun") for n in range(7)] for d in range(20, 27)}
+    _add_date_pages(site, busy)
+
+    calls = _print({"count": 1, "show_upcoming": True, "upcoming_per_day": asked})
+
+    start = calls.index(("bold", "UPCOMING DAYS"))
+    assert len([c for c in calls[start:] if c[0] == "body"]) == 3 * per_date
 
 
 def test_a_failed_upcoming_load_says_so_without_losing_todays_days(site):
@@ -1118,10 +1191,11 @@ def test_upcoming_says_so_when_nothing_in_the_next_week_matches(site):
 def test_skip_checkboxes_also_leave_days_out_of_the_upcoming_list(site):
     _add_date_pages(site)
 
-    calls = _print({"count": 1, "show_upcoming": True, "exclude_fun": True})
+    calls = _print({"count": 1, "show_upcoming": True, "upcoming_per_day": 5, "exclude_fun": True})
 
     start = calls.index(("bold", "UPCOMING DAYS"))
-    assert not [c for c in calls[start:] if c[0] == "caption" and c[1].endswith("- Fun")]
+    assert ("caption", "Fun") not in calls[start:]
+    assert ("body", "National Absurdity Day") not in calls
 
 
 def test_upcoming_still_prints_when_every_one_of_todays_days_is_skipped(site):
@@ -1135,7 +1209,7 @@ def test_upcoming_still_prints_when_every_one_of_todays_days_is_skipped(site):
     )
 
     assert ("body", "No national days today") in calls
-    assert ("body", "National Movie Day") in calls
+    assert ("bold", "Sat, Nov 21") in calls and ("body", "National Movie Day") in calls
     assert calls[-1] == ("caption", "via nationaltoday.com")
 
 
@@ -1145,17 +1219,6 @@ def test_nothing_from_the_site_means_no_credit_line(site):
     assert ("body", "No national days today") in calls
     assert ("body", "Nothing matching in the") in calls
     assert ("caption", "via nationaltoday.com") not in calls
-
-
-def test_the_upcoming_settings_are_off_by_default_and_limited_to_three_to_five():
-    props = module_registry.get_module("national_days").config_schema["properties"]
-
-    assert props["show_upcoming"]["default"] is False
-    assert (props["upcoming_count"]["minimum"], props["upcoming_count"]["default"], props["upcoming_count"]["maximum"]) == (3, 3, 5)
-    module_registry.validate_module_config("national_days", {"show_upcoming": True, "upcoming_count": 5})
-    for bad in ({"upcoming_count": 2}, {"upcoming_count": 6}, {"show_upcoming": "yes"}):
-        with pytest.raises(ValueError):
-            module_registry.validate_module_config("national_days", bad)
 
 
 def test_no_credit_line_when_todays_list_is_all_skipped_and_upcoming_cannot_load(site):
@@ -1168,3 +1231,25 @@ def test_no_credit_line_when_todays_list_is_all_skipped_and_upcoming_cannot_load
 
     assert ("body", "Couldn't load upcoming days.") in calls
     assert ("caption", "via nationaltoday.com") not in calls  # nothing from the site was printed
+
+
+def test_date_headings_show_the_weekday_and_an_unpadded_day():
+    assert nd._upcoming_heading(date(2026, 11, 20)) == "Fri, Nov 20"
+    assert nd._upcoming_heading(date(2027, 1, 3)) == "Sun, Jan 3"
+
+
+def test_the_upcoming_settings_are_off_by_default_with_limits_of_three_to_five_dates_and_one_to_five_days_each():
+    props = module_registry.get_module("national_days").config_schema["properties"]
+
+    assert props["show_upcoming"]["default"] is False
+    dates = props["upcoming_count"]
+    assert (dates["minimum"], dates["default"], dates["maximum"]) == (3, 3, 5)
+    per_date = props["upcoming_per_day"]
+    assert (per_date["minimum"], per_date["default"], per_date["maximum"]) == (1, 2, 5)
+    module_registry.validate_module_config(
+        "national_days", {"show_upcoming": True, "upcoming_count": 5, "upcoming_per_day": 5}
+    )
+    for bad in ({"upcoming_count": 2}, {"upcoming_count": 6}, {"upcoming_per_day": 0}, {"upcoming_per_day": 6},
+                {"show_upcoming": "yes"}):
+        with pytest.raises(ValueError):
+            module_registry.validate_module_config("national_days", bad)
