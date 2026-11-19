@@ -9,6 +9,7 @@ Personal changes to Travis's repo:
 - Flipped Crossword solutions upside down by using a bitmap-based capture and output
 - Added over 1,000 new "easy" crossword/word search game entries and hints
 - Added a queueing feature that allows you to rotate knob and press button for any channel while the current print is ongoing. Queued channel prints will print after 10 second delay which would be enough time to flush buffer on low-baud-rate printers.
+- Added a National Days module: today's fun national days with short "ways to celebrate" ideas, fetched live from nationaltoday.com when the channel prints (no site content is stored in the repo).
 
 Original readme for Travis's Repo:
 * **No screens:** output is physical thermal paper.
@@ -219,7 +220,7 @@ Configuration is handled entirely via the **Web UI** at `http://pc-1.local` (or 
 
 Each module is an independent instance with its own configuration. See [Architecture & Modules](#4-architecture--modules) for detailed information.
 
-Available modules: **News API**, **RSS Feeds**, **Weather**, **Email Inbox**, **Sudoku**, **Maze**, **Adventure**, **Astronomy**, **Calendar**, **Webhook**, **Print Endpoint**, **QR Code**, **Text / Note**, **Quotes**, **Journal Prompt**, **History**, **System Monitor**, **Word of the Day**
+Available modules: **News API**, **RSS Feeds**, **Weather**, **Email Inbox**, **Sudoku**, **Maze**, **Adventure**, **Astronomy**, **Calendar**, **Webhook**, **Print Endpoint**, **QR Code**, **Text / Note**, **Quotes**, **Journal Prompt**, **History**, **System Monitor**, **Word of the Day**, **National Days**
 
 ### Settings Storage
 * **Settings File:** `config.json` (auto-saved, gitignored)
@@ -323,6 +324,7 @@ paper-console/
 │   │   ├── history.py
 │   │   ├── journal_prompts.py
 │   │   ├── maze.py
+│   │   ├── national_days.py    # Today's national days + ways to celebrate (live fetch)
 │   │   ├── news.py
 │   │   ├── print_image.py
 │   │   ├── qrcode_print.py
@@ -412,6 +414,8 @@ Themed content lives in `app/data/history_themed.json`, built by `scripts/build_
 **System Monitor:** Hostname, IP, WiFi, disk/memory bars, uptime, load, CPU temp (where available).
 
 **Word of the Day:** Merriam Webster's word of the day
+
+**National Days:** Today's fun national days, each with a few short "ways to celebrate" ideas. It reads [nationaltoday.com](https://nationaltoday.com/) live each time it prints, so it needs internet. Settings: **Number of Days** (default 3, up to 5), **Ideas per Day** (default 2, up to 4), an option to include a short description under each idea, and an option to keep the site's own order (by default fun, food and special-interest days print before awareness and federal days). It makes one request for today's list plus one per day printed (never more than 6), one after another, keeps the result in memory for the rest of the day so repeat prints cost nothing, and stays out of the paths the site's `robots.txt` disallows. If the site can't be reached the receipt says so. Because it reads the site's page markup, a redesign can break it; run `./.venv/bin/python scripts/check_national_days.py` (add `--save-html DIR` to keep the raw pages) on a machine with internet to see what it finds. The content belongs to nationaltoday.com: nothing from the site is stored in the repo or shipped in releases, and every receipt credits it. nationaldaycalendar.com is intentionally not used, because its terms forbid copying its content.
 
 **Crossword:** Easy / Medium / Hard; generated crossword puzzle printed as bitmap grid. The answer key prints at the bottom of the receipt upside-down so it can't be read at a glance.
 
@@ -554,5 +558,6 @@ Legend: `[X]` = Used, `[ ]` = Empty. The header is 2 pins wide.
 * **Email Auth Failed:** Use a **Google App Password**, not your main password. Ensure 2FA is enabled
 * **Calendar Not Showing Events:** Verify iCal URL is correct. Check that events exist in the date range
 * **Weather Wrong:** Check `config.json` Lat/Long via UI location search feature
+* **National Days Says It Couldn't Load:** Check the device has internet, then run `./.venv/bin/python scripts/check_national_days.py`. Exit 1 means the page couldn't be downloaded; exit 2 means it downloaded but the holiday list wasn't found in it (the site changed; see `parse_today_page` in `app/modules/national_days.py`)
 
 ---
