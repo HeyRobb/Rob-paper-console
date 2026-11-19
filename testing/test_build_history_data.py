@@ -286,3 +286,117 @@ def test_cli_requires_contact_for_network_modes(bhd, capsys):
     assert bhd.main(["--fetch-wikidata"]) == 2
     assert bhd.main(["--check-ids"]) == 2
     assert "--contact is required" in capsys.readouterr().out
+
+
+# ---- Wikidata scope filters (--wikidata-kinds / --*-since / --birth-occupations) ----
+
+
+def _recording_http_get(calls):
+    def http_get(url, **kwargs):
+        calls.append(kwargs["params"]["query"])
+        return FakeResponse(200, {"results": {"bindings": [_binding("Q1", "X", "2000-01-02", 99)]}})
+    return http_get
+
+
+MINS = {"film": 45, "game": 30, "birth": 60}
+
+
+def test_fetch_wikidata_only_fetches_requested_kinds_and_start_years(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    calls = []
+    count = bhd.fetch_wikidata(
+        cache, "me@example.com", MINS, window_size=5, delay=0, http_get=_recording_http_get(calls),
+        sleep=lambda s: None, this_year=2026,
+        kinds=["film", "birth"], since={"film": 1981, "birth": 1981},
+    )
+
+    names = sorted(p.name for p in cache.glob("*.json"))
+    assert count == len(calls) == len(names) > 0
+    assert not any(n.startswith("game_") for n in names)
+    # earliest windows start exactly at the requested year; latest birth window ends 15 years ago
+    assert "film_1981_1985.json" in names and not any(n.startswith("film_1980") for n in names)
+    assert "birth_1981_1985.json" in names and "birth_2011_2011.json" in names
+    assert not any(n.startswith("birth_2012") for n in names)
+
+
+def test_fetch_wikidata_restricted_occupations_get_their_own_cache_files(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    calls = []
+    actors = [pair for pair in bhd.BIRTH_OCCUPATIONS if pair[1] == "actor"]
+    kwargs = dict(window_size=50, delay=0, sleep=lambda s: None, this_year=2026,
+                  kinds=["birth"], since={"birth": 1981})
+
+    bhd.fetch_wikidata(cache, "me@example.com", MINS, http_get=_recording_http_get(calls),
+                       occupations=actors, **kwargs)
+    assert [p.name for p in cache.glob("*.json")] == ["birth_actor_1981_2011.json"]
+    assert "wd:Q33999" in calls[0] and "wd:Q177220" not in calls[0]  # actors only, no singers
+
+    # widening the occupation list later must fetch again rather than reuse the actor-only window
+    before = len(calls)
+    bhd.fetch_wikidata(cache, "me@example.com", MINS, http_get=_recording_http_get(calls), **kwargs)
+    assert len(calls) == before + 1
+    assert (cache / "birth_1981_2011.json").exists()
+
+
+def test_load_wikidata_cache_applies_kind_year_and_occupation_filters(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "film_1975_1979.json").write_text(json.dumps(bhd.bindings_to_rows("film", [
+        _binding("Q1", "Old Film", "1977-05-25", 99),
+    ])))
+    (cache / "film_1995_1999.json").write_text(json.dumps(bhd.bindings_to_rows("film", [
+        _binding("Q2", "New Film", "1997-12-19", 99),
+    ])))
+    (cache / "game_2010_2014.json").write_text(json.dumps(bhd.bindings_to_rows("game", [
+        _binding("Q3", "Some Game", "2011-11-18", 99),
+    ])))
+    (cache / "birth_1950_1954.json").write_text(json.dumps(bhd.bindings_to_rows("birth", [
+        _binding("Q4", "Old Actor", "1952-03-03", 99, occ="Q33999"),
+    ])))
+    (cache / "birth_1985_1989.json").write_text(json.dumps(bhd.bindings_to_rows("birth", [
+        _binding("Q5", "Young Actor", "1987-04-04", 99, occ="Q33999"),
+        _binding("Q6", "Young Singer", "1988-05-05", 99, occ="Q177220"),
+        _binding("Q7", "Young Both", "1989-06-06", 99, occ="Q177220"),
+        _binding("Q7", "Young Both", "1989-06-06", 99, occ="Q33999"),
+    ])))
+    actors = [pair for pair in bhd.BIRTH_OCCUPATIONS if pair[1] == "actor"]
+
+    texts = {e["t"] for e in bhd.load_wikidata_cache(
+        cache, kinds=["film", "birth"], since={"film": 1981, "birth": 1981}, occupations=actors)}
+
+    assert texts == {"New Film is released.", "Born: Young Actor, actor.", "Born: Young Both, actor."}
+
+    # defaults still load everything that was cached
+    assert len(bhd.load_wikidata_cache(cache)) == 7
+
+
+def test_cli_scope_flags_parse_and_reject_unknown_values(bhd, capsys):
+    args = bhd.parse_args(["--wikidata-kinds", "film, birth", "--film-since", "1981",
+                           "--birth-since", "1981", "--birth-occupations", "Actor"])
+    assert args.wikidata_kinds == ["film", "birth"]
+    assert (args.film_since, args.game_since, args.birth_since) == (1981, 1970, 1981)
+    assert args.birth_occupations == [("Q33999", "actor")]
+
+    defaults = bhd.parse_args([])
+    assert defaults.wikidata_kinds == ["film", "game", "birth"] and defaults.birth_occupations is None
+
+    for bad in (["--wikidata-kinds", "film,books"], ["--birth-occupations", "plumber"]):
+        with pytest.raises(SystemExit):
+            bhd.parse_args(bad)
+    assert "must be" in capsys.readouterr().err
+
+
+def test_main_offline_build_honours_scope_filters(bhd, tmp_path, capsys):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "film_1975_1979.json").write_text(json.dumps(bhd.bindings_to_rows("film", [
+        _binding("Q1", "Old Film", "1977-05-25", 99)])))
+    (cache / "film_1995_1999.json").write_text(json.dumps(bhd.bindings_to_rows("film", [
+        _binding("Q2", "New Film", "1997-12-19", 99)])))
+    out = tmp_path / "out.json"
+
+    assert bhd.main(["--no-classic", "--cache-dir", str(cache), "--output", str(out),
+                     "--wikidata-kinds", "film", "--film-since", "1981"]) == 0
+    texts = [e["t"] for days in json.loads(out.read_text())["events"].values()
+             for entries in days.values() for e in entries]
+    assert "New Film is released." in texts and "Old Film is released." not in texts

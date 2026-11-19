@@ -16,6 +16,13 @@ Add Wikidata (run on a machine with normal internet access, not the sandbox):
     ./.venv/bin/python scripts/build_history_data.py --check-ids --contact you@example.com
     ./.venv/bin/python scripts/build_history_data.py --fetch-wikidata --contact you@example.com
 
+Limit the Wikidata step to what you want (here: films since 1981 plus actors born
+since 1981, nothing else), then build:
+
+    ./.venv/bin/python scripts/build_history_data.py --fetch-wikidata --contact you@example.com \\
+        --wikidata-kinds film,birth --film-since 1981 --birth-since 1981 \\
+        --birth-occupations actor --min-sitelinks-birth 40
+
 Wikidata responses are cached under scripts/history_sources/wikidata_cache/ so
 a re-run only fetches windows that are missing. Every later build (with or
 without --fetch-wikidata) merges whatever is in that cache.
@@ -93,6 +100,11 @@ BIRTH_OCCUPATIONS: List[Tuple[str, str]] = [
 
 Entry = Dict[str, Any]  # keys: m, d, y, c, s, t, src
 HttpGet = Callable[..., Any]
+
+# Wikidata kinds the generator can fetch, and the earliest year fetched for each
+# unless --film-since / --game-since / --birth-since say otherwise.
+WIKIDATA_KINDS = ("film", "game", "birth")
+DEFAULT_SINCE: Dict[str, int] = {"film": 1920, "game": 1970, "birth": 1850}
 
 
 # --------------------------------------------------------------------------
@@ -211,9 +223,14 @@ SELECT ?item ?itemLabel ?date ?sl WHERE {{
 """.strip()
 
 
-def build_birth_query(min_sitelinks: int, start_year: int, end_year: int) -> str:
+def build_birth_query(
+    min_sitelinks: int,
+    start_year: int,
+    end_year: int,
+    occupations: Optional[List[Tuple[str, str]]] = None,
+) -> str:
     """People in the listed occupations born in the window (day-precision dates)."""
-    values = " ".join(f"wd:{qid}" for qid, _ in BIRTH_OCCUPATIONS)
+    values = " ".join(f"wd:{qid}" for qid, _ in (occupations or BIRTH_OCCUPATIONS))
     return f"""
 SELECT ?item ?itemLabel ?date ?sl ?occ WHERE {{
   VALUES ?occ {{ {values} }}
@@ -308,8 +325,21 @@ def bindings_to_rows(kind: str, bindings: Iterable[Dict[str, Any]]) -> List[Dict
     return rows
 
 
-def _cache_path(cache_dir: Path, kind: str, start: int, end: int) -> Path:
-    return cache_dir / f"{kind}_{start}_{end}.json"
+def _occupation_tag(occupations: Optional[List[Tuple[str, str]]]) -> str:
+    """Cache-name tag for a restricted occupation list ('' for the full default list).
+
+    Keeps a window fetched for actors only from being mistaken for a window that
+    covers every occupation if the filter is widened later.
+    """
+    if not occupations or list(occupations) == BIRTH_OCCUPATIONS:
+        return ""
+    return "-".join(name.replace(" ", "-") for _, name in occupations)
+
+
+def _cache_path(cache_dir: Path, kind: str, start: int, end: int, tag: str = "") -> Path:
+    # The kind is always the part before the first underscore (load_wikidata_cache relies on it).
+    middle = f"_{tag}" if tag else ""
+    return cache_dir / f"{kind}{middle}_{start}_{end}.json"
 
 
 def fetch_wikidata(
@@ -322,22 +352,39 @@ def fetch_wikidata(
     http_get: Optional[HttpGet] = None,
     sleep: Callable[[float], None] = time.sleep,
     this_year: Optional[int] = None,
+    kinds: Optional[Iterable[str]] = None,
+    since: Optional[Dict[str, int]] = None,
+    occupations: Optional[List[Tuple[str, str]]] = None,
 ) -> int:
-    """Fetch any missing year windows into cache_dir. Returns number fetched."""
+    """Fetch any missing year windows into cache_dir. Returns number fetched.
+
+    kinds limits what is fetched (default: film, game, birth), since gives the
+    earliest year per kind (see DEFAULT_SINCE) and occupations narrows the
+    birthday query (default: every entry in BIRTH_OCCUPATIONS).
+    """
     this_year = this_year or datetime.now().year
     cache_dir.mkdir(parents=True, exist_ok=True)
+    wanted = set(kinds) if kinds is not None else set(WIKIDATA_KINDS)
+    first_year = {**DEFAULT_SINCE, **(since or {})}
+    birth_tag = _occupation_tag(occupations)
 
     jobs = []
-    for start, end in year_windows(1920, this_year, window_size):
-        jobs.append(("film", start, end, build_release_query("Q11424", min_sitelinks["film"], start, end)))
-    for start, end in year_windows(1970, this_year, window_size):
-        jobs.append(("game", start, end, build_release_query("Q7889", min_sitelinks["game"], start, end)))
-    for start, end in year_windows(1850, this_year - 15, window_size):
-        jobs.append(("birth", start, end, build_birth_query(min_sitelinks["birth"], start, end)))
+    if "film" in wanted:
+        for start, end in year_windows(first_year["film"], this_year, window_size):
+            jobs.append(("film", start, end, "",
+                         build_release_query("Q11424", min_sitelinks["film"], start, end)))
+    if "game" in wanted:
+        for start, end in year_windows(first_year["game"], this_year, window_size):
+            jobs.append(("game", start, end, "",
+                         build_release_query("Q7889", min_sitelinks["game"], start, end)))
+    if "birth" in wanted:
+        for start, end in year_windows(first_year["birth"], this_year - 15, window_size):
+            jobs.append(("birth", start, end, birth_tag,
+                         build_birth_query(min_sitelinks["birth"], start, end, occupations)))
 
     fetched = 0
-    for kind, start, end, query in jobs:
-        path = _cache_path(cache_dir, kind, start, end)
+    for kind, start, end, tag, query in jobs:
+        path = _cache_path(cache_dir, kind, start, end, tag)
         if path.exists() and not refresh:
             continue
         print(f"  fetching {kind} {start}-{end} ...", flush=True)
@@ -377,11 +424,23 @@ def check_wikidata_ids(contact: str, http_get: Optional[HttpGet] = None) -> List
     return problems
 
 
-def load_wikidata_cache(cache_dir: Path = CACHE_DIR) -> List[Entry]:
-    """Turn cached Wikidata rows into entries (earliest date per item, one occupation per person)."""
+def load_wikidata_cache(
+    cache_dir: Path = CACHE_DIR,
+    kinds: Optional[Iterable[str]] = None,
+    since: Optional[Dict[str, int]] = None,
+    occupations: Optional[List[Tuple[str, str]]] = None,
+) -> List[Entry]:
+    """Turn cached Wikidata rows into entries (earliest date per item, one occupation per person).
+
+    kinds, since and occupations apply the same limits as fetch_wikidata, so
+    windows cached by an earlier, wider run never leak into a narrower build.
+    """
     if not cache_dir.exists():
         return []
 
+    wanted = set(kinds) if kinds is not None else set(WIKIDATA_KINDS)
+    first_year = {**DEFAULT_SINCE, **(since or {})}
+    allowed_occupations = {qid for qid, _ in occupations} if occupations else None
     occupation_rank = {qid: i for i, (qid, _) in enumerate(BIRTH_OCCUPATIONS)}
     occupation_name = dict(BIRTH_OCCUPATIONS)
 
@@ -389,9 +448,14 @@ def load_wikidata_cache(cache_dir: Path = CACHE_DIR) -> List[Entry]:
     best: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for path in sorted(cache_dir.glob("*.json")):
         kind = path.name.split("_", 1)[0]
-        if kind not in {"film", "game", "birth"}:
+        if kind not in wanted:
             continue
         for row in json.loads(path.read_text(encoding="utf-8")):
+            if int(str(row["date"])[:4]) < first_year[kind]:
+                continue  # before the requested start year
+            if kind == "birth" and allowed_occupations is not None \
+                    and row["occ"] not in allowed_occupations:
+                continue
             key = (kind, row["qid"])
             current = best.get(key)
             if current is None:
@@ -509,7 +573,38 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--min-sitelinks-film", type=int, default=45)
     p.add_argument("--min-sitelinks-game", type=int, default=30)
     p.add_argument("--min-sitelinks-birth", type=int, default=60)
-    return p.parse_args(argv)
+    p.add_argument("--wikidata-kinds", default=",".join(WIKIDATA_KINDS), metavar="LIST",
+                   help="Comma-separated Wikidata kinds to fetch and merge: film, game, birth "
+                        "(default: all three)")
+    p.add_argument("--film-since", type=int, default=DEFAULT_SINCE["film"], metavar="YEAR",
+                   help="Earliest film release year (default: %(default)s)")
+    p.add_argument("--game-since", type=int, default=DEFAULT_SINCE["game"], metavar="YEAR",
+                   help="Earliest video game release year (default: %(default)s)")
+    p.add_argument("--birth-since", type=int, default=DEFAULT_SINCE["birth"], metavar="YEAR",
+                   help="Earliest birth year (default: %(default)s)")
+    p.add_argument("--birth-occupations", default="all", metavar="LIST",
+                   help="Comma-separated occupations for birthdays, or 'all' (default). "
+                        "Choices: " + ", ".join(name for _, name in BIRTH_OCCUPATIONS))
+    args = p.parse_args(argv)
+
+    kinds = [k.strip() for k in args.wikidata_kinds.split(",") if k.strip()]
+    bad_kinds = [k for k in kinds if k not in WIKIDATA_KINDS]
+    if bad_kinds or not kinds:
+        p.error(f"--wikidata-kinds must be a comma-separated subset of {', '.join(WIKIDATA_KINDS)}")
+    args.wikidata_kinds = kinds
+
+    if args.birth_occupations.strip().lower() == "all":
+        args.birth_occupations = None
+    else:
+        by_name = {name: (qid, name) for qid, name in BIRTH_OCCUPATIONS}
+        names = [n.strip().lower() for n in args.birth_occupations.split(",") if n.strip()]
+        bad_names = [n for n in names if n not in by_name]
+        if bad_names or not names:
+            p.error("--birth-occupations must be 'all' or a comma-separated list of: "
+                    + ", ".join(by_name))
+        # keep the priority order defined in BIRTH_OCCUPATIONS
+        args.birth_occupations = [pair for pair in BIRTH_OCCUPATIONS if pair[1] in names]
+    return args
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -529,11 +624,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Wikidata ID check passed ({len(WD_IDS)} IDs).")
         return 0
 
+    since = {"film": args.film_since, "game": args.game_since, "birth": args.birth_since}
+
     if args.fetch_wikidata:
         count = fetch_wikidata(
             args.cache_dir, args.contact,
             {"film": args.min_sitelinks_film, "game": args.min_sitelinks_game, "birth": args.min_sitelinks_birth},
             window_size=args.window_years, delay=args.delay, refresh=args.refresh,
+            kinds=args.wikidata_kinds, since=since, occupations=args.birth_occupations,
         )
         print(f"Fetched {count} new Wikidata window(s).")
 
@@ -546,7 +644,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     curated = load_curated(args.curated)
     entries += curated
     sources.append(f"curated milestones ({len(curated)} entries)")
-    wikidata = load_wikidata_cache(args.cache_dir)
+    wikidata = load_wikidata_cache(
+        args.cache_dir, kinds=args.wikidata_kinds, since=since, occupations=args.birth_occupations,
+    )
     if wikidata:
         entries += wikidata
         sources.append(f"Wikidata cache ({len(wikidata)} entries)")
