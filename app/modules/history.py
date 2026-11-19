@@ -19,6 +19,9 @@ LOCAL_DB_PATH = DATA_DIR / "history.json"
 THEMED_DB_PATH = DATA_DIR / "history_themed.json"
 
 THEME_POP = "Pop culture & tech"
+# The general "on this day" list, but only its positive entries: anything about
+# people dying or being killed, violence, wars, disasters, crime or politics is
+# left out (see GRIM_PATTERN in history_rules.py).
 THEME_CLASSIC = "Classic history"
 THEMES = [THEME_POP, THEME_CLASSIC]
 DEFAULT_THEME = THEME_POP
@@ -42,8 +45,7 @@ GENRES = [
 # have their own module now (see birthdays.py).
 ALL_GENRE_CATEGORIES = frozenset(category for _, category, _ in GENRES)
 
-# Used only when a themed day has no entries: skip classic entries that are
-# about wars, disasters, deaths, treaties and similar.
+# Classic entries that match this are never printed, in any theme.
 _GRIM_PATTERN = GRIM_PATTERN
 
 _themed_cache: Dict[str, Any] = {"key": None, "data": None}
@@ -135,14 +137,12 @@ def get_themed_events_for_date(
 
 
 def get_fallback_events_for_date(target_date: date) -> List[str]:
-    """Classic events for a date with wars/disasters/politics filtered out.
+    """Classic events for a date with everything that is not positive removed.
 
-    If every classic entry for the day is filtered out, returns them all so
-    the receipt is never empty just because of the filter.
+    Deaths, killings, violence, wars, disasters, crime and politics never get
+    through, even on a day where that leaves nothing (the receipt then says so).
     """
-    classic = get_events_for_date(target_date)
-    calm = [e for e in classic if not _GRIM_PATTERN.search(e)]
-    return calm or classic
+    return [e for e in get_events_for_date(target_date) if not _GRIM_PATTERN.search(e)]
 
 
 def get_events_for_theme(
@@ -150,9 +150,12 @@ def get_events_for_theme(
     theme: str = DEFAULT_THEME,
     categories: Iterable[str] | None = None,
 ) -> List[str]:
-    """Events for a date under the chosen theme, falling back to calmer classic history."""
+    """Events for a date under the chosen theme, falling back to positive classic history."""
     if theme == THEME_CLASSIC:
-        return get_events_for_date(target_date)
+        # If a day has no positive classic entry, show a pop-culture/tech one instead.
+        return get_fallback_events_for_date(target_date) or get_themed_events_for_date(
+            target_date, THEME_POP
+        )
 
     themed = get_themed_events_for_date(target_date, theme, categories)
     if themed:
@@ -201,8 +204,10 @@ def _resolve_reference_date(config: Dict[str, Any] | None) -> date:
     config_schema={
         "type": "object",
         "description": (
-            "The skip toggles apply to the Pop culture & tech theme. Days with "
-            "nothing left for your chosen genres print calmer classic history."
+            "Classic history is the general list with anything about deaths, "
+            "violence, wars, disasters, crime or politics removed. The skip "
+            "toggles apply to Pop culture & tech; a day with nothing left for "
+            "your chosen genres prints positive classic history instead."
         ),
         "properties": {
             "theme": {

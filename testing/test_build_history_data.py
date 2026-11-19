@@ -472,3 +472,18 @@ def test_main_leaves_existing_birthdays_file_alone_when_cache_has_no_births(bhd,
 
     assert births_out.read_text(encoding="utf-8") == '{"births": {}}'
     assert "left as it is" in capsys.readouterr().out
+
+
+# ---- positive-only filtering of classic entries ------------------------------
+
+
+def test_classify_drops_entries_about_deaths_and_disasters_but_keeps_look_alike_words(bhd):
+    died = "After a five-day search, the body of an American actress and singer is recovered from a lake, where she had drowned."
+    train = "A CSX train rolls out of a yard with tank cars carrying flammable chemicals; the runaway train is later derailed."
+    raiders = "The first of the Indiana Jones film franchise, Raiders of the Lost Ark, is released in theaters."
+    dartmouth = "The Dartmouth workshop is the first conference on artificial intelligence."
+
+    assert bhd.classify(died, 2020) is None
+    assert bhd.classify(train, 2001) is None
+    assert bhd.classify(raiders, 1981)[0] == "film_tv"  # "Raiders" is not a raid
+    assert bhd.classify(dartmouth, 1956)[0] == "tech"  # a conference is not a political summit

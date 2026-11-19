@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from app import module_registry
+from app.history_rules import GRIM_PATTERN
 from app.modules import history as history_module
 
 # Days that have no entry at all in app/data/history.json (known gap in the
@@ -159,11 +160,11 @@ def test_empty_themed_day_falls_back_to_calm_classic(themed_db, monkeypatch):
     assert events == ["1985: A popular cartoon airs its first episode."]
 
 
-def test_fallback_keeps_everything_when_all_classic_entries_are_grim(themed_db, monkeypatch):
+def test_grim_classic_entries_are_never_printed_even_when_nothing_else_is_left(themed_db, monkeypatch):
     grim = ["1991: A siege ends.", "1960: An earthquake kills hundreds."]
     monkeypatch.setattr(history_module, "get_events_for_date", lambda d: list(grim))
 
-    assert history_module.get_events_for_theme(date(2026, 1, 2), history_module.THEME_POP) == grim
+    assert history_module.get_events_for_theme(date(2026, 1, 2), history_module.THEME_POP) == []
 
 
 def test_missing_themed_file_falls_back_to_classic_without_error(tmp_path, monkeypatch):
@@ -182,12 +183,80 @@ def test_corrupt_themed_file_falls_back_to_classic(tmp_path, monkeypatch):
     assert history_module.get_events_for_theme(date(2026, 1, 2)) == ["1999: A calm event."]
 
 
-def test_classic_theme_ignores_themed_file(themed_db, monkeypatch):
-    monkeypatch.setattr(history_module, "get_events_for_date", lambda d: ["1066: A battle happens."])
+def test_classic_theme_keeps_only_positive_entries_and_ignores_themed_file(themed_db, monkeypatch):
+    monkeypatch.setattr(
+        history_module,
+        "get_events_for_date",
+        lambda d: [
+            "1066: A battle happens.",
+            "1943: Nazis liquidate a concentration camp, murdering thousands.",
+            "1972: A famous actor dies at 80.",
+            "1990: A man is killed in an accident.",
+            "1969: The first university on the moon opens.",
+        ],
+    )
 
     events = history_module.get_events_for_theme(date(2026, 11, 18), history_module.THEME_CLASSIC)
 
-    assert events == ["1066: A battle happens."]
+    assert events == ["1969: The first university on the moon opens."]
+
+
+def test_classic_theme_with_nothing_positive_shows_a_pop_entry_instead(themed_db, monkeypatch):
+    monkeypatch.setattr(
+        history_module, "get_events_for_date", lambda d: ["1066: A battle happens.", "1943: Thousands are murdered."]
+    )
+
+    events = history_module.get_events_for_theme(date(2026, 11, 18), history_module.THEME_CLASSIC)
+
+    assert events[0] == "2011: Minecraft 1.0 is released."  # themed entries, never the grim ones
+    assert all("battle" not in e and "murdered" not in e for e in events)
+
+
+def test_classic_theme_with_nothing_positive_and_no_themed_entries_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(history_module, "THEMED_DB_PATH", tmp_path / "nope.json")
+    monkeypatch.setattr(history_module, "get_events_for_date", lambda d: ["1066: A battle happens."])
+
+    assert history_module.get_events_for_theme(date(2026, 11, 18), history_module.THEME_CLASSIC) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The Holocaust: Nazis liquidate Janowska concentration camp, murdering at least 6,000 Jews.",
+        "A gunman kills five and injures 17 at a nightclub.",
+        "He was murdered in his home.",
+        "The actor died at the age of 80.",
+        "Two people were killed when the bridge collapsed.",
+        "Wartime rationing ends.",
+        "Quisling seizes power in Norway.",
+        "Tanganyika becomes independent from Britain.",
+        "The Space Shuttle program: NASA grounds the Space Shuttle fleet.",
+        "A hurricane makes landfall.",
+        "He was sentenced to ten years in prison for fraud.",
+        "Georges Carpentier knocked out Joe Beckett.",
+    ],
+)
+def test_grim_pattern_blocks_deaths_violence_war_disaster_crime_and_politics(text):
+    assert GRIM_PATTERN.search(text), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The Beatles release Abbey Road.",
+        "Beatnik poets gather in San Francisco.",
+        "NASA launches the MAVEN probe to Mars.",
+        "Apollo 11 begins a new era of lunar exploration.",
+        "Victoria Falls Bridge opens to traffic.",
+        "Citizen Kane premieres in New York City.",
+        "Ford introduces the moving assembly line.",
+        "A bank accepts its first deposit.",
+        "Cy Young throws a perfect game at the Huntington Avenue Grounds.",
+        "Stanford University opens its doors in California.",
+    ],
+)
+def test_grim_pattern_does_not_swallow_positive_words_that_merely_look_similar(text):
+    assert not GRIM_PATTERN.search(text), (text, GRIM_PATTERN.search(text).group(0))
 
 
 def test_themed_cache_reloads_when_file_changes(tmp_path, monkeypatch):
@@ -314,3 +383,28 @@ def test_every_day_has_something_to_print_except_known_classic_gaps():
                 empty.add((month, day))
 
     assert empty <= KNOWN_CLASSIC_GAPS, sorted(empty - KNOWN_CLASSIC_GAPS)
+
+
+def test_classic_theme_never_prints_grim_entries_in_shipped_data():
+    classic = json.loads(history_module.LOCAL_DB_PATH.read_text(encoding="utf-8"))
+    printed_anything = 0
+    for month in range(1, 13):
+        for day in range(1, calendar.monthrange(2024, month)[1] + 1):
+            events = history_module.get_events_for_theme(date(2024, month, day), history_module.THEME_CLASSIC)
+            classic_today = set(classic.get(str(month), {}).get(str(day), []))
+            for event in events:
+                # a pop-culture fallback entry can carry a title like "Die Hard"; classic ones cannot
+                if event in classic_today:
+                    assert not GRIM_PATTERN.search(event), (month, day, event)
+            printed_anything += bool(events)
+
+    assert printed_anything >= 366 - len(KNOWN_CLASSIC_GAPS)
+
+
+def test_shipped_classic_history_for_nov_19_has_no_holocaust_or_killing():
+    events = history_module.get_events_for_theme(date(2026, 11, 19), history_module.THEME_CLASSIC)
+    joined = " ".join(events).lower()
+
+    assert events
+    for word in ("holocaust", "janowska", "killed", "kills", "murder", "died", "dies", "massacre"):
+        assert word not in joined
