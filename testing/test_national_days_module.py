@@ -508,10 +508,10 @@ def test_module_is_registered_online_with_a_validated_config():
     assert "include_details" not in props and props["ideas"]["maximum"] == 10
 
     module_registry.validate_module_config("national_days", {})
-    module_registry.validate_module_config("national_days", {"count": 5, "ideas": 10})
+    module_registry.validate_module_config("national_days", {"count": 7, "ideas": 10})
     module_registry.validate_module_config("national_days", {"exclude_fun": True, "exclude_cause": False})
     for bad in (
-        {"count": 0}, {"count": 6}, {"ideas": 11}, {"ideas": 0}, {"count": "three"},
+        {"count": 0}, {"count": 8}, {"ideas": 11}, {"ideas": 0}, {"count": "three"},
         {"exclude_cause": "yes"},
     ):
         with pytest.raises(ValueError):
@@ -1296,3 +1296,35 @@ def test_the_upcoming_section_prints_no_category_lines_but_still_filters_by_cate
     shown = [c[1] for c in calls[start:] if c[0] == "body"]
     assert "Future Teachers of America Day" not in shown and "Transgender Day of Remembrance" not in shown
     assert "National Peanut Butter Fudge Day" in shown
+
+
+def _many_days(site, how_many):
+    entries = "".join(_entry(f"fun-day-{n}", f"Fun Day {n}", "Fun") for n in range(1, how_many + 1))
+    site.pages[nd.TODAY_URL] = f"<h2>All holidays today</h2><ul>{entries}</ul>"
+    for n in range(1, how_many + 1):
+        site.pages[f"https://nationaltoday.com/fun-day-{n}/"] = _holiday_page(f"Fun Day {n}", _ideas_for(f"Fun Day {n}"))
+
+
+@pytest.mark.parametrize("asked, printed", [(1, 1), (3, 3), (7, 7), (8, 7), (99, 7), (0, 1)])
+def test_todays_days_to_print_goes_up_to_seven(site, asked, printed):
+    _many_days(site, 9)
+
+    calls = _print({"count": asked, "ideas": 1})
+
+    assert [c[1] for c in calls if c[0] == "bold"] == [f"Fun Day {n}" for n in range(1, printed + 1)]
+
+
+def test_seven_days_cost_one_request_for_the_list_plus_one_each(site):
+    _many_days(site, 9)
+
+    _print({"count": 7, "ideas": 2})
+
+    assert len(site.calls) == 8
+    assert site.urls[0] == nd.TODAY_URL
+    assert len(set(site.urls)) == 8  # nothing fetched twice
+
+
+def test_the_days_to_print_setting_allows_seven_and_still_defaults_to_three():
+    spec = module_registry.get_module("national_days").config_schema["properties"]["count"]
+
+    assert (spec["minimum"], spec["default"], spec["maximum"]) == (1, 3, 7)
