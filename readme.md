@@ -261,6 +261,15 @@ For production deployments, configure these environment variables:
 * **`UVICORN_ACCESS_LOG`**: Set to `1` to enable HTTP access logs (default: `0` for lower log volume).
 * **`PC1_PRINTER_BAUDRATE`**: Serial speed used to talk to the thermal printer (default: `115200`). The printer must be set to the same rate. On a device, run `sudo systemctl edit pc-1.service`, add `[Service]` and `Environment=PC1_PRINTER_BAUDRATE=9600`, then `sudo systemctl restart pc-1.service`.
 
+### Printer Settings File (`printer.env`)
+
+Printer tuning lives in a flat file in the repo root, `printer.env`, which is tracked in git and read at startup. The shipped values are tuned for the CSN-A2 / QR204-class TTL printer at 115200 baud (paced serial writes, lighter crossword blocks, short paper feed), so that printer works out of the box after a `git pull` and a restart.
+
+* Edit `printer.env` and run `sudo systemctl restart pc-1.service`. Format is `KEY=VALUE`, one per line; only `PC1_*` keys are read.
+* For per-device tweaks you don't want to commit, create `printer.local.env` (git-ignored). It overrides `printer.env`.
+* Real environment variables (for example a systemd `Environment=` drop-in) override both files. If you used `sudo systemctl edit pc-1.service` before, run `sudo systemctl revert pc-1.service` so the file is the single source of truth.
+* Set `PC1_DISABLE_ENV_FILE=1` to skip both files.
+
 ### Production Release Artifacts
 
 For non-git production units, build versioned release artifacts with:

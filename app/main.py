@@ -22,6 +22,11 @@ import shutil
 import sys
 import time
 
+# Load printer.env / printer.local.env before any app module reads its settings.
+from app.env_file import load_env_files  # noqa: E402
+
+load_env_files()
+
 # Configure logging
 LOG_LEVEL_NAME = os.environ.get("PC1_LOG_LEVEL", "WARNING").upper()
 LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.WARNING)

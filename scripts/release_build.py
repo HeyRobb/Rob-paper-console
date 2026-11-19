@@ -41,6 +41,7 @@ INCLUDE_PATHS = [
     "run.sh",
     "AGENTS.md",
     "readme.md",
+    "printer.env",
     ".env.example",
 ]
 

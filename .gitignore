@@ -99,3 +99,6 @@ deploy.sh
 
 # History data builder: cached Wikidata responses (regenerable, large)
 scripts/history_sources/wikidata_cache/
+
+# Per-device printer overrides (see printer.env)
+printer.local.env
