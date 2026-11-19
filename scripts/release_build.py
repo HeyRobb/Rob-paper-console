@@ -51,6 +51,7 @@ REQUIRED_RUNTIME_PATHS = [
     "app/data/quotes.json",
     "app/data/history.json",
     "app/data/history_themed.json",
+    "app/data/birthdays.json",
     "app/data/geonames_cities.csv",
     "app/data/journal_prompts.json",
     "app/data/adventure_story.json",

@@ -226,7 +226,7 @@ def _build_snapshot_calendar_ics(reference_day: Optional[date] = None) -> str:
 def _apply_snapshot_defaults(type_id: str, config: dict) -> dict:
     out = deepcopy(config or {})
 
-    if type_id == "history":
+    if type_id in {"history", "birthdays"}:
         out.setdefault("reference_date", SNAPSHOT_HISTORY_DATE)
 
     elif type_id == "text":

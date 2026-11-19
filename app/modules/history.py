@@ -36,8 +36,10 @@ GENRES = [
     ("exclude_games", "games", "Skip video games"),
     ("exclude_tech", "tech", "Skip tech & internet"),
     ("exclude_culture", "culture", "Skip comics, toys & theme parks"),
-    ("exclude_birthdays", "birthday", "Skip famous birthdays"),
 ]
+# Entries in history_themed.json whose category is not listed here (for example
+# "birthday" entries from an older build) are never printed; famous birthdays
+# have their own module now (see birthdays.py).
 ALL_GENRE_CATEGORIES = frozenset(category for _, category, _ in GENRES)
 
 # Used only when a themed day has no entries: skip classic entries that are

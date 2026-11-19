@@ -4,8 +4,12 @@
 Sources, merged and de-duplicated per calendar day:
   1. app/data/history.json - classic entries, tagged by app.history_rules.classify()
   2. scripts/history_sources/curated_milestones.json - hand-checked milestones
-  3. Wikidata (optional, needs internet) - films, video games and famous births,
-     ranked by how many Wikipedia language editions cover them (a fame proxy).
+  3. Wikidata (optional, needs internet) - films and video games, ranked by how
+     many Wikipedia language editions cover them (a fame proxy).
+
+Famous birthdays are written to a second file, app/data/birthdays.json, for the
+Birthdays module (same ranking, up to --births-per-day people per day). They are
+kept out of history_themed.json so On This Day is not crowded by them.
 
 Offline build (no network needed):
 
@@ -52,12 +56,13 @@ CLASSIC_PATH = ROOT / "app" / "data" / "history.json"
 CURATED_PATH = ROOT / "scripts" / "history_sources" / "curated_milestones.json"
 CACHE_DIR = ROOT / "scripts" / "history_sources" / "wikidata_cache"
 OUTPUT_PATH = ROOT / "app" / "data" / "history_themed.json"
+BIRTHDAYS_PATH = ROOT / "app" / "data" / "birthdays.json"
 
 # Categories the module understands (keep in sync with app/modules/history.py).
-CATEGORIES = {"film_tv", "music", "games", "tech", "culture", "birthday"}
+CATEGORIES = {"film_tv", "music", "games", "tech", "culture"}
 
 PER_DAY_CAP = 14
-BIRTHS_PER_DAY_CAP = 3
+BIRTHDAYS_PER_DAY_CAP = 15  # people kept per calendar day in birthdays.json
 MAX_TEXT_LEN = 170
 
 WDQS_ENDPOINT = "https://query.wikidata.org/sparql"
@@ -424,28 +429,28 @@ def check_wikidata_ids(contact: str, http_get: Optional[HttpGet] = None) -> List
     return problems
 
 
-def load_wikidata_cache(
-    cache_dir: Path = CACHE_DIR,
-    kinds: Optional[Iterable[str]] = None,
+def _best_cache_rows(
+    cache_dir: Path,
+    kinds: Iterable[str],
     since: Optional[Dict[str, int]] = None,
     occupations: Optional[List[Tuple[str, str]]] = None,
-) -> List[Entry]:
-    """Turn cached Wikidata rows into entries (earliest date per item, one occupation per person).
+) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    """One cached row per (kind, Wikidata item), honouring the scope limits.
 
     kinds, since and occupations apply the same limits as fetch_wikidata, so
     windows cached by an earlier, wider run never leak into a narrower build.
+    A film or game keeps its earliest release date; a person keeps the
+    highest-priority occupation (see BIRTH_OCCUPATIONS).
     """
+    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
     if not cache_dir.exists():
-        return []
+        return best
 
-    wanted = set(kinds) if kinds is not None else set(WIKIDATA_KINDS)
+    wanted = set(kinds)
     first_year = {**DEFAULT_SINCE, **(since or {})}
     allowed_occupations = {qid for qid, _ in occupations} if occupations else None
     occupation_rank = {qid: i for i, (qid, _) in enumerate(BIRTH_OCCUPATIONS)}
-    occupation_name = dict(BIRTH_OCCUPATIONS)
 
-    # qid -> best row per kind
-    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for path in sorted(cache_dir.glob("*.json")):
         kind = path.name.split("_", 1)[0]
         if kind not in wanted:
@@ -467,34 +472,62 @@ def load_wikidata_cache(
                     current["occ"] = row["occ"]
             elif row["date"] < current["date"]:
                 current["date"] = row["date"]  # earliest release wins
+    return best
+
+
+def _usable_label(row: Dict[str, Any]) -> bool:
+    label = row["label"]
+    return bool(label) and not re.fullmatch(r"Q\d+", label)  # unlabelled items show as their QID
+
+
+def load_wikidata_cache(
+    cache_dir: Path = CACHE_DIR,
+    kinds: Optional[Iterable[str]] = None,
+    since: Optional[Dict[str, int]] = None,
+    occupations: Optional[List[Tuple[str, str]]] = None,
+) -> List[Entry]:
+    """Cached films and video games as On This Day entries.
+
+    Births are not returned here; they go to their own file (load_birth_rows).
+    """
+    wanted = (set(kinds) if kinds is not None else set(WIKIDATA_KINDS)) & {"film", "game"}
+    best = _best_cache_rows(cache_dir, wanted, since, occupations)
 
     entries: List[Entry] = []
     for (kind, _qid_value), row in best.items():
-        label = row["label"]
-        if not label or re.fullmatch(r"Q\d+", label):
-            continue  # no English label
+        if not _usable_label(row):
+            continue
         try:
             when = date.fromisoformat(row["date"])
         except ValueError:
             continue
-        sl = row["sl"]
-        if kind == "birth":
-            occupation = occupation_name.get(row["occ"], "")
-            entries.append(
-                {"m": when.month, "d": when.day, "y": when.year, "c": "birthday",
-                 "s": min(78, round(20 + sl * 0.3)),
-                 "t": f"Born: {label}, {occupation}." if occupation else f"Born: {label}.",
-                 "src": "wikidata"}
-            )
-        else:
-            entries.append(
-                {"m": when.month, "d": when.day, "y": when.year,
-                 "c": "film_tv" if kind == "film" else "games",
-                 "s": min(88, round(25 + sl * 0.35)),
-                 "t": f"{label} is released.", "src": "wikidata"}
-            )
+        entries.append(
+            {"m": when.month, "d": when.day, "y": when.year,
+             "c": "film_tv" if kind == "film" else "games",
+             "s": min(88, round(25 + row["sl"] * 0.35)),
+             "t": f"{row['label']} is released.", "src": "wikidata"}
+        )
     return entries
 
+
+def load_birth_rows(
+    cache_dir: Path = CACHE_DIR,
+    since: Optional[Dict[str, int]] = None,
+    occupations: Optional[List[Tuple[str, str]]] = None,
+) -> List[Dict[str, Any]]:
+    """Cached people as {m, d, y, n (name), o (occupation), s (Wikipedia language editions)}."""
+    occupation_name = dict(BIRTH_OCCUPATIONS)
+    rows: List[Dict[str, Any]] = []
+    for (_kind, _qid_value), row in _best_cache_rows(cache_dir, {"birth"}, since, occupations).items():
+        if not _usable_label(row):
+            continue
+        try:
+            when = date.fromisoformat(row["date"])
+        except ValueError:
+            continue
+        rows.append({"m": when.month, "d": when.day, "y": when.year, "n": row["label"],
+                     "o": occupation_name.get(row["occ"], ""), "s": row["sl"]})
+    return rows
 
 # --------------------------------------------------------------------------
 # Merge + write
@@ -503,8 +536,7 @@ def load_wikidata_cache(
 _SOURCE_PRIORITY = {"curated": 0, "wikidata": 1, "classic": 2}
 
 
-def merge(entries: Iterable[Entry], per_day_cap: int = PER_DAY_CAP,
-          births_cap: int = BIRTHS_PER_DAY_CAP) -> Dict[str, Dict[str, List[Entry]]]:
+def merge(entries: Iterable[Entry], per_day_cap: int = PER_DAY_CAP) -> Dict[str, Dict[str, List[Entry]]]:
     by_day: Dict[Tuple[int, int], List[Entry]] = defaultdict(list)
     for e in entries:
         by_day[(e["m"], e["d"])].append(e)
@@ -513,16 +545,12 @@ def merge(entries: Iterable[Entry], per_day_cap: int = PER_DAY_CAP,
     for (m, d), day_entries in sorted(by_day.items()):
         day_entries.sort(key=lambda e: (-e["s"], _SOURCE_PRIORITY.get(e["src"], 9), -e["y"]))
         kept: List[Entry] = []
-        births = 0
         for e in day_entries:
             if len(kept) >= per_day_cap:
                 break
-            if e["c"] == "birthday" and births >= births_cap:
-                continue
             if any(is_duplicate(e, k) for k in kept):
                 continue
             kept.append(e)
-            births += e["c"] == "birthday"
         merged.setdefault(str(m), {})[str(d)] = kept
     return merged
 
@@ -545,6 +573,46 @@ def write_themed(path: Path, merged: Dict[str, Dict[str, List[Entry]]], sources:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def build_birthdays(rows: Iterable[Dict[str, Any]], cap: int = BIRTHDAYS_PER_DAY_CAP
+                    ) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """Group people by calendar day, most widely covered first, at most `cap` per day."""
+    by_day: Dict[Tuple[int, int], List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_day[(row["m"], row["d"])].append(row)
+
+    result: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    for (m, d), people in sorted(by_day.items()):
+        people.sort(key=lambda r: (-r["s"], -r["y"], r["n"]))
+        result.setdefault(str(m), {})[str(d)] = [
+            {"y": r["y"], "n": r["n"], "o": r["o"], "s": r["s"]} for r in people[:cap]
+        ]
+    return result
+
+
+def write_birthdays(path: Path, births: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                    sources: List[str]) -> None:
+    """One day per line so the file diffs cleanly."""
+    meta = {"version": 1, "generated": date.today().isoformat(), "sources": sources}
+    lines = ["{", f'"meta": {json.dumps(meta)},', '"births": {']
+    month_blocks = []
+    for month in sorted(births, key=int):
+        day_lines = []
+        for day in sorted(births[month], key=int):
+            day_lines.append(
+                f'  "{day}": {json.dumps(births[month][day], ensure_ascii=False, separators=(",", ":"))}'
+            )
+        month_blocks.append(f' "{month}": {{\n' + ",\n".join(day_lines) + "\n }")
+    lines.append(",\n".join(month_blocks))
+    lines.extend(["}", "}", ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def birthdays_summary(births: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> str:
+    covered = sum(1 for days in births.values() for people in days.values() if people)
+    total = sum(len(people) for days in births.values() for people in days.values())
+    return f"{total} people across {covered} of 366 calendar days"
+
+
 def coverage_summary(merged: Dict[str, Dict[str, List[Entry]]]) -> str:
     covered = sum(1 for days in merged.values() for entries in days.values() if entries)
     total = sum(len(e) for days in merged.values() for e in days.values())
@@ -558,6 +626,10 @@ def coverage_summary(merged: Dict[str, Dict[str, List[Entry]]]) -> str:
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--output", type=Path, default=OUTPUT_PATH)
+    p.add_argument("--birthdays-output", type=Path, default=BIRTHDAYS_PATH,
+                   help="Where the Birthdays module's data is written (default: %(default)s)")
+    p.add_argument("--births-per-day", type=int, default=BIRTHDAYS_PER_DAY_CAP,
+                   help="Most people kept per calendar day (default: %(default)s)")
     p.add_argument("--classic", type=Path, default=CLASSIC_PATH)
     p.add_argument("--curated", type=Path, default=CURATED_PATH)
     p.add_argument("--cache-dir", type=Path, default=CACHE_DIR)
@@ -656,6 +728,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"Wrote {args.output}: {coverage_summary(merged)}")
     for line in sources:
         print("  source:", line)
+
+    # Famous birthdays live in their own file for the Birthdays module.
+    if "birth" in args.wikidata_kinds:
+        birth_rows = load_birth_rows(args.cache_dir, since=since, occupations=args.birth_occupations)
+        if birth_rows:
+            births = build_birthdays(birth_rows, args.births_per_day)
+            write_birthdays(args.birthdays_output, births,
+                            [f"Wikidata cache ({len(birth_rows)} people)"])
+            print(f"Wrote {args.birthdays_output}: {birthdays_summary(births)}")
+        else:
+            print(f"No birthdays in the Wikidata cache, so {args.birthdays_output} was left as it is.")
     return 0
 
 

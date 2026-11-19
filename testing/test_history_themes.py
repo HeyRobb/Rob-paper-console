@@ -66,7 +66,9 @@ def themed_db(tmp_path, monkeypatch):
     return path
 
 
-def test_pop_theme_returns_all_pop_categories_best_first(themed_db):
+def test_pop_theme_returns_pop_categories_best_first_and_ignores_legacy_birthdays(themed_db):
+    # The fixture still holds a "birthday" entry like an older build of the data
+    # file would; famous birthdays belong to the Birthdays module now.
     events = history_module.get_themed_events_for_date(date(2026, 11, 18), history_module.THEME_POP)
 
     assert events == [
@@ -74,7 +76,6 @@ def test_pop_theme_returns_all_pop_categories_best_first(themed_db):
         "1928: Steamboat Willie premieres.",
         "1971: Intel ships a chip.",
         "1985: Calvin and Hobbes debuts.",
-        "1969: Some singer is born.",
     ]
 
 
@@ -89,6 +90,8 @@ def test_categories_argument_limits_genres(themed_db):
 def test_skip_toggles_map_to_remaining_categories():
     assert history_module._resolve_categories(None) == history_module.ALL_GENRE_CATEGORIES
     assert history_module._resolve_categories({"count": 3}) == history_module.ALL_GENRE_CATEGORIES
+    # "exclude_birthdays" was a toggle in an earlier build; a saved config that
+    # still has it must be accepted and simply ignored.
     assert history_module._resolve_categories(
         {"exclude_games": True, "exclude_birthdays": True, "exclude_music": False}
     ) == {"film_tv", "music", "tech", "culture"}
@@ -253,6 +256,7 @@ def test_config_schema_offers_theme_enum_and_validates():
         "history", {"theme": "Classic history", "count": 2, "exclude_music": True}
     )
     module_registry.validate_module_config("history", {"count": 1})  # existing saved configs keep working
+    module_registry.validate_module_config("history", {"exclude_birthdays": True})  # removed toggle: still accepted
     with pytest.raises(ValueError):
         module_registry.validate_module_config("history", {"theme": "Politics only"})
     with pytest.raises(ValueError):
@@ -264,9 +268,10 @@ def test_config_schema_has_one_skip_checkbox_per_genre_defaulting_to_unchecked()
     toggles = {k: v for k, v in properties.items() if k.startswith("exclude_")}
 
     assert set(toggles) == {key for key, _category, _title in history_module.GENRES}
-    assert len(toggles) == 6
+    assert len(toggles) == 5
+    assert "exclude_birthdays" not in toggles
     assert history_module.ALL_GENRE_CATEGORIES == {
-        "film_tv", "music", "games", "tech", "culture", "birthday"
+        "film_tv", "music", "games", "tech", "culture"
     }
     for toggle in toggles.values():
         assert toggle["type"] == "boolean" and toggle["title"].startswith("Skip ")
@@ -280,7 +285,7 @@ def test_config_schema_has_one_skip_checkbox_per_genre_defaulting_to_unchecked()
 
 def test_shipped_themed_file_is_well_formed():
     raw = json.loads(history_module.THEMED_DB_PATH.read_text(encoding="utf-8"))
-    valid_categories = {"film_tv", "music", "games", "tech", "culture", "birthday"}
+    valid_categories = {"film_tv", "music", "games", "tech", "culture"}
 
     for month, days in raw["events"].items():
         for day, entries in days.items():

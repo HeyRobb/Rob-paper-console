@@ -130,17 +130,15 @@ def test_merge_prefers_curated_over_duplicate_classic(bhd):
     assert [e["src"] for e in merged["11"]["18"]] == ["curated"]
 
 
-def test_merge_caps_births_and_total_per_day_and_sorts_by_score(bhd):
-    entries = [_entry(5, 5, 1950 + i, "birthday", 70 - i, f"Born: Person {i}, actor.", src="wikidata")
-               for i in range(6)]
-    entries += [_entry(5, 5, 1970 + i, "tech", 40 + i, f"Distinct gadget number {i} ships worldwide.")
-                for i in range(20)]
+def test_merge_caps_total_per_day_and_sorts_by_score(bhd):
+    entries = [_entry(5, 5, 1970 + i, "tech", 40 + i, f"Distinct gadget number {i} ships worldwide.")
+               for i in range(20)]
 
     day = bhd.merge(entries)["5"]["5"]
 
     assert len(day) == bhd.PER_DAY_CAP
-    assert sum(e["c"] == "birthday" for e in day) == bhd.BIRTHS_PER_DAY_CAP
     assert [e["s"] for e in day] == sorted((e["s"] for e in day), reverse=True)
+    assert "birthday" not in bhd.CATEGORIES  # births have their own file
 
 
 def test_write_themed_round_trips_through_the_module_loader(bhd, tmp_path, monkeypatch):
@@ -222,12 +220,15 @@ def test_cache_rows_become_entries_with_earliest_date_and_best_occupation(bhd, t
 
     entries = {e["t"]: e for e in bhd.load_wikidata_cache(cache)}
 
-    assert set(entries) == {"Some Film is released.", "Some Game is released.", "Born: Pat Star, actor."}
+    # births are not On This Day entries any more
+    assert set(entries) == {"Some Film is released.", "Some Game is released."}
     film = entries["Some Film is released."]
     assert (film["m"], film["d"], film["y"], film["c"]) == (11, 18, 1928, "film_tv")
     assert entries["Some Game is released."]["c"] == "games"
-    birth = entries["Born: Pat Star, actor."]
-    assert (birth["c"], birth["y"]) == ("birthday", 1952) and birth["s"] <= 78
+
+    # the person comes back through the birthday loader, with the better occupation
+    people = bhd.load_birth_rows(cache)
+    assert people == [{"m": 3, "d": 3, "y": 1952, "n": "Pat Star", "o": "actor", "s": 200}]
 
 
 def test_load_wikidata_cache_without_directory_is_empty(bhd, tmp_path):
@@ -361,13 +362,17 @@ def test_load_wikidata_cache_applies_kind_year_and_occupation_filters(bhd, tmp_p
     ])))
     actors = [pair for pair in bhd.BIRTH_OCCUPATIONS if pair[1] == "actor"]
 
+    since = {"film": 1981, "birth": 1981}
     texts = {e["t"] for e in bhd.load_wikidata_cache(
-        cache, kinds=["film", "birth"], since={"film": 1981, "birth": 1981}, occupations=actors)}
+        cache, kinds=["film", "birth"], since=since, occupations=actors)}
+    people = {(r["n"], r["o"]) for r in bhd.load_birth_rows(cache, since=since, occupations=actors)}
 
-    assert texts == {"New Film is released.", "Born: Young Actor, actor.", "Born: Young Both, actor."}
+    assert texts == {"New Film is released."}
+    assert people == {("Young Actor", "actor"), ("Young Both", "actor")}
 
-    # defaults still load everything that was cached
-    assert len(bhd.load_wikidata_cache(cache)) == 7
+    # defaults still load everything that was cached: 2 films + 1 game, and 4 people
+    assert len(bhd.load_wikidata_cache(cache)) == 3
+    assert len(bhd.load_birth_rows(cache)) == 4
 
 
 def test_cli_scope_flags_parse_and_reject_unknown_values(bhd, capsys):
@@ -400,3 +405,70 @@ def test_main_offline_build_honours_scope_filters(bhd, tmp_path, capsys):
     texts = [e["t"] for days in json.loads(out.read_text())["events"].values()
              for entries in days.values() for e in entries]
     assert "New Film is released." in texts and "Old Film is released." not in texts
+
+
+# ---- birthdays.json (the Birthdays module's data) --------------------------
+
+
+def _person(m, d, y, n, s, o="actor"):
+    return {"m": m, "d": d, "y": y, "n": n, "o": o, "s": s}
+
+
+def test_build_birthdays_groups_by_day_ranks_by_reach_and_caps(bhd):
+    rows = [_person(11, 19, 1962, "Jodie Foster", 120), _person(11, 19, 1961, "Meg Ryan", 110),
+            _person(11, 19, 1983, "Adam Driver", 90), _person(11, 19, 1990, "Tie Breaker", 90),
+            _person(2, 29, 1980, "Leap Actor", 55)]
+
+    births = bhd.build_birthdays(rows, cap=3)
+
+    assert [p["n"] for p in births["11"]["19"]] == ["Jodie Foster", "Meg Ryan", "Tie Breaker"]
+    assert births["11"]["19"][0] == {"y": 1962, "n": "Jodie Foster", "o": "actor", "s": 120}
+    assert births["2"]["29"][0]["n"] == "Leap Actor"
+    assert bhd.birthdays_summary(births) == "4 people across 2 of 366 calendar days"
+
+
+def test_write_birthdays_round_trips_through_the_module_loader(bhd, tmp_path, monkeypatch):
+    from app.modules import birthdays as birthdays_module
+
+    rows = [_person(11, 19, 1983, "Adam Driver", 90), _person(11, 19, 1962, "Jodie Foster", 120)]
+    out = tmp_path / "birthdays.json"
+    bhd.write_birthdays(out, bhd.build_birthdays(rows), ["test"])
+    monkeypatch.setattr(birthdays_module, "BIRTHDAYS_DB_PATH", out)
+
+    people = birthdays_module.get_birthdays_for_date(date(2026, 11, 19))
+
+    assert [p["n"] for p in people] == ["Jodie Foster", "Adam Driver"]
+    assert json.loads(out.read_text())["meta"]["sources"] == ["test"]
+
+
+def test_main_writes_birthdays_file_and_keeps_births_out_of_history(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "birth_actor_1981_1985.json").write_text(json.dumps(bhd.bindings_to_rows("birth", [
+        _binding("Q1", "Adam Driver", "1983-11-19", 90, occ="Q33999"),
+        _binding("Q2", "Some Singer", "1984-11-19", 99, occ="Q177220"),
+    ])))
+    out, births_out = tmp_path / "themed.json", tmp_path / "birthdays.json"
+    common = ["--no-classic", "--cache-dir", str(cache), "--output", str(out),
+              "--birthdays-output", str(births_out), "--wikidata-kinds", "film,birth",
+              "--birth-occupations", "actor"]
+
+    assert bhd.main(common) == 0
+
+    people = json.loads(births_out.read_text())["births"]["11"]["19"]
+    assert [p["n"] for p in people] == ["Adam Driver"]  # the singer is outside the occupation filter
+    themed = json.loads(out.read_text())["events"]
+    assert all(e["c"] != "birthday" for days in themed.values() for es in days.values() for e in es)
+    assert not any("Adam Driver" in e["t"] for days in themed.values() for es in days.values() for e in es)
+
+
+def test_main_leaves_existing_birthdays_file_alone_when_cache_has_no_births(bhd, tmp_path, capsys):
+    births_out = tmp_path / "birthdays.json"
+    births_out.write_text('{"births": {}}', encoding="utf-8")
+
+    assert bhd.main(["--no-classic", "--cache-dir", str(tmp_path / "empty"),
+                     "--output", str(tmp_path / "themed.json"),
+                     "--birthdays-output", str(births_out)]) == 0
+
+    assert births_out.read_text(encoding="utf-8") == '{"births": {}}'
+    assert "left as it is" in capsys.readouterr().out
