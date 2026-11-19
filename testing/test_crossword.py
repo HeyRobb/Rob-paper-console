@@ -263,3 +263,68 @@ def test_execute_crossword_prints_answers_as_an_inverted_image():
     )
     # The "hidden below" hint stays as normal, upright text.
     printer.print_caption.assert_any_call("Solution hidden below...")
+
+
+
+# --- Lighter blocked squares -------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from app.modules import crossword as crossword_module  # noqa: E402
+
+_CELL = 26
+
+
+def _tiny_generator():
+    # 4 columns x 3 rows; "AB" across at row 1, columns 1-2. Cell (3, 1) is blocked.
+    grid = [[" "] * 4 for _ in range(3)]
+    grid[1][1] = "A"
+    grid[1][2] = "B"
+    words = [{"word": "AB", "dir": "across", "x": 1, "y": 1, "num": 1}]
+    return SimpleNamespace(width=4, height=3, grid=grid, words_placed=words)
+
+
+def _blocked_interior(img):
+    x0, y0 = 3 * _CELL + 2, 1 * _CELL + 2
+    return [
+        img.getpixel((x, y))
+        for y in range(y0, y0 + _CELL - 2)
+        for x in range(x0, x0 + _CELL - 2)
+    ]
+
+
+def test_default_block_fill_is_solid_black(monkeypatch):
+    monkeypatch.delenv("PC1_CROSSWORD_BLOCK_FILL", raising=False)
+    img = crossword_module.render_crossword_grid(_tiny_generator(), _CELL)
+    assert set(_blocked_interior(img)) == {0}
+
+
+def test_block_fill_lightens_blocked_squares_only(monkeypatch):
+    monkeypatch.setenv("PC1_CROSSWORD_BLOCK_FILL", "75")
+    img = crossword_module.render_crossword_grid(_tiny_generator(), _CELL)
+
+    interior = _blocked_interior(img)
+    black_share = interior.count(0) / len(interior)
+    assert black_share == pytest.approx(0.75, abs=0.01)
+
+    # The letter squares stay white and the borders stay solid black.
+    assert img.getpixel((1 * _CELL + 10, 1 * _CELL + 10)) == 1
+    assert all(img.getpixel((3 * _CELL, y)) == 0 for y in range(_CELL, 2 * _CELL))
+    assert all(img.getpixel((x, 1 * _CELL)) == 0 for x in range(3 * _CELL, 4 * _CELL))
+
+
+def test_block_fill_lower_percent_is_lighter(monkeypatch):
+    shares = {}
+    for percent in ("90", "60"):
+        monkeypatch.setenv("PC1_CROSSWORD_BLOCK_FILL", percent)
+        img = crossword_module.render_crossword_grid(_tiny_generator(), _CELL)
+        interior = _blocked_interior(img)
+        shares[percent] = interior.count(0) / len(interior)
+    assert shares["60"] < shares["90"] < 1.0
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "5", "150", "-3"])
+def test_bad_block_fill_values_fall_back_to_solid(monkeypatch, raw):
+    monkeypatch.setenv("PC1_CROSSWORD_BLOCK_FILL", raw)
+    img = crossword_module.render_crossword_grid(_tiny_generator(), _CELL)
+    assert set(_blocked_interior(img)) == {0}

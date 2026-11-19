@@ -21,6 +21,55 @@ MAX_NUM_WORDS = 18
 ANSWER_BLOCK_MARGIN_DOTS = 12
 
 
+# Blocked (black) squares can be printed lighter than solid so the thermal
+# head feeds faster through the grid. PC1_CROSSWORD_BLOCK_FILL is the percent
+# of dots that stay black in a blocked square: 100 (default) is solid black,
+# 75 is a fine dot pattern that still reads as dark. The white squares and the
+# grid lines are never changed.
+BLOCK_FILL_ENV = "PC1_CROSSWORD_BLOCK_FILL"
+DEFAULT_BLOCK_FILL_PERCENT = 100
+MIN_BLOCK_FILL_PERCENT = 10
+BLOCK_FILL_PATTERN_SCALE = 2  # pattern cells are 2x2 dots so they print reliably
+_BAYER_4X4 = (
+    (0, 8, 2, 10),
+    (12, 4, 14, 6),
+    (3, 11, 1, 9),
+    (15, 7, 13, 5),
+)
+
+
+def _block_fill_percent() -> int:
+    raw = os.environ.get(BLOCK_FILL_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_BLOCK_FILL_PERCENT
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning("Ignoring %s=%r: not an integer", BLOCK_FILL_ENV, raw)
+        return DEFAULT_BLOCK_FILL_PERCENT
+    if not MIN_BLOCK_FILL_PERCENT <= value <= 100:
+        logger.warning(
+            "Ignoring %s=%r: must be between %d and 100",
+            BLOCK_FILL_ENV,
+            raw,
+            MIN_BLOCK_FILL_PERCENT,
+        )
+        return DEFAULT_BLOCK_FILL_PERCENT
+    return value
+
+
+def _lighten_block(img: Image.Image, rect: Tuple[int, int, int, int], fill_percent: int) -> None:
+    """Replace a solid black rectangle with a dot pattern that is ``fill_percent`` black."""
+    x0, y0, x1, y1 = rect
+    threshold = fill_percent * 16 / 100.0
+    scale = BLOCK_FILL_PATTERN_SCALE
+    pixels = img.load()
+    for y in range(y0, y1 + 1):
+        row = _BAYER_4X4[(y // scale) % 4]
+        for x in range(x0, x1 + 1):
+            pixels[x, y] = 0 if row[(x // scale) % 4] < threshold else 1
+
+
 def _clamp_num_words(value: Any) -> int:
     try:
         parsed = int(value)
@@ -297,16 +346,20 @@ def render_crossword_grid(generator: CrosswordGenerator, cell_size: int, font_pa
         num_font = ImageFont.load_default()
 
     # Draw white squares for letters
+    fill_percent = _block_fill_percent()
     for y in range(start_y, end_y):
         for x in range(generator.width):
+            # Same inset for both kinds of square: this leaves a solid black
+            # border around every square.
+            x0 = x * cell_size + 2
+            y0 = (y - start_y) * cell_size + 2
+            x1 = (x + 1) * cell_size - 1
+            y1 = (y - start_y + 1) * cell_size - 1
             if generator.grid[y][x] != ' ':
                 # Draw white inset (1 = white)
-                # This leaves a black border around each white square
-                x0 = x * cell_size + 2
-                y0 = (y - start_y) * cell_size + 2
-                x1 = (x + 1) * cell_size - 1
-                y1 = (y - start_y + 1) * cell_size - 1
                 draw.rectangle([x0, y0, x1, y1], fill=1)
+            elif fill_percent < 100:
+                _lighten_block(img, (x0, y0, x1, y1), fill_percent)
 
     # Draw numbers
     # We need to know which cells have a number
