@@ -44,7 +44,7 @@ SOURCE_CREDIT = "via nationaltoday.com"
 
 USER_AGENT = "Paper Console/1 (personal thermal-printer project)"
 REQUEST_TIMEOUT = (4, 8)  # (connect, read) seconds
-TOTAL_BUDGET_SECONDS = 25  # stop fetching more pages once a print has used this long
+TOTAL_BUDGET_SECONDS = 40  # stop fetching more pages once a print has used this long (16 pages at most)
 REQUEST_PAUSE_SECONDS = 0.5  # courtesy gap between holiday-page requests
 MAX_PAGE_BYTES = 2_000_000
 
@@ -52,7 +52,7 @@ MAX_PAGE_BYTES = 2_000_000
 DISALLOWED_PREFIXES = ("/resources/", "/wp-admin/")
 
 DEFAULT_COUNT = 3
-MAX_COUNT = 7
+MAX_COUNT = 15  # a day's list is usually 10 to 30 long, so this is about half to all of it
 DEFAULT_IDEAS = 2
 MAX_IDEAS = 10
 
@@ -521,7 +521,10 @@ def _day_line(target_date: date, category: str | None) -> str:
             "count": {
                 "type": "integer",
                 "title": "Days to Print",
-                "description": "How many of today's national days to print, each with its ideas.",
+                "description": (
+                    "How many of today's national days to print, each with its ideas. "
+                    "Each day printed is one more page read from the site the first time it prints each day."
+                ),
                 "default": DEFAULT_COUNT,
                 "minimum": 1,
                 "maximum": MAX_COUNT,

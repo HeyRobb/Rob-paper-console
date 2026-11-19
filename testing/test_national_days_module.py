@@ -7,6 +7,7 @@ on each holiday page).
 """
 
 from datetime import date
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import pytest
@@ -508,10 +509,10 @@ def test_module_is_registered_online_with_a_validated_config():
     assert "include_details" not in props and props["ideas"]["maximum"] == 10
 
     module_registry.validate_module_config("national_days", {})
-    module_registry.validate_module_config("national_days", {"count": 7, "ideas": 10})
+    module_registry.validate_module_config("national_days", {"count": 15, "ideas": 10})
     module_registry.validate_module_config("national_days", {"exclude_fun": True, "exclude_cause": False})
     for bad in (
-        {"count": 0}, {"count": 8}, {"ideas": 11}, {"ideas": 0}, {"count": "three"},
+        {"count": 0}, {"count": 16}, {"ideas": 11}, {"ideas": 0}, {"count": "three"},
         {"exclude_cause": "yes"},
     ):
         with pytest.raises(ValueError):
@@ -1107,26 +1108,43 @@ def _many_days(site, how_many):
         site.pages[f"https://nationaltoday.com/fun-day-{n}/"] = _holiday_page(f"Fun Day {n}", _ideas_for(f"Fun Day {n}"))
 
 
-@pytest.mark.parametrize("asked, printed", [(1, 1), (3, 3), (7, 7), (8, 7), (99, 7), (0, 1)])
-def test_todays_days_to_print_goes_up_to_seven(site, asked, printed):
-    _many_days(site, 9)
+@pytest.mark.parametrize("asked, printed", [(1, 1), (3, 3), (7, 7), (15, 15), (16, 15), (99, 15), (0, 1)])
+def test_todays_days_to_print_goes_up_to_fifteen(site, asked, printed):
+    _many_days(site, 18)
 
     calls = _print({"count": asked, "ideas": 1})
 
     assert [c[1] for c in calls if c[0] == "bold"] == [f"Fun Day {n}" for n in range(1, printed + 1)]
 
 
-def test_seven_days_cost_one_request_for_the_list_plus_one_each(site):
-    _many_days(site, 9)
+def test_fifteen_days_cost_one_request_for_the_list_plus_one_each(site):
+    _many_days(site, 18)
 
-    _print({"count": 7, "ideas": 2})
+    _print({"count": 15, "ideas": 2})
 
-    assert len(site.calls) == 8
+    assert len(site.calls) == 16
     assert site.urls[0] == nd.TODAY_URL
-    assert len(set(site.urls)) == 8  # nothing fetched twice
+    assert len(set(site.urls)) == 16  # nothing fetched twice
 
 
-def test_the_days_to_print_setting_allows_seven_and_still_defaults_to_three():
+def test_the_time_budget_is_long_enough_for_fifteen_days_on_a_slow_connection(site, monkeypatch):
+    _many_days(site, 18)
+    clock = [0.0]
+    monkeypatch.setattr(nd, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda seconds: None))
+
+    def slow_page(url, **kwargs):
+        clock[0] += 2.0  # two seconds a page: 32 s for the list and 15 days, more than the old 25 s budget
+        return site(url, **kwargs)
+
+    monkeypatch.setattr(nd.requests, "get", slow_page)
+
+    calls = _print({"count": 15, "ideas": 1})
+
+    assert len([c for c in calls if c == ("caption", "Ways to celebrate:")]) == 15  # every day kept its ideas
+    assert nd.TOTAL_BUDGET_SECONDS > 32
+
+
+def test_the_days_to_print_setting_allows_fifteen_and_still_defaults_to_three():
     spec = module_registry.get_module("national_days").config_schema["properties"]["count"]
 
-    assert (spec["minimum"], spec["default"], spec["maximum"]) == (1, 3, 7)
+    assert (spec["minimum"], spec["default"], spec["maximum"]) == (1, 3, 15)
