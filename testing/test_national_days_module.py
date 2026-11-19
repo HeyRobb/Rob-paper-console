@@ -1253,3 +1253,18 @@ def test_the_upcoming_settings_are_off_by_default_with_limits_of_three_to_five_d
                 {"show_upcoming": "yes"}):
         with pytest.raises(ValueError):
             module_registry.validate_module_config("national_days", bad)
+
+
+def test_each_setting_says_whether_it_is_for_todays_list_or_the_upcoming_section():
+    props = module_registry.get_module("national_days").config_schema["properties"]
+    titles = {key: spec["title"] for key, spec in props.items()}
+
+    today = ["count", "ideas", "keep_page_order"]
+    upcoming = ["show_upcoming", "upcoming_count", "upcoming_per_day"]
+    assert all(titles[key].startswith("Today: ") for key in today)
+    assert all(titles[key].startswith("Upcoming: ") for key in upcoming)
+    assert len(set(titles.values())) == len(titles)  # no two settings share a label
+    # The two lists of settings sit together in the form, today's first.
+    keys = list(props)
+    assert keys[: len(today + upcoming)] == today + upcoming
+    assert props["count"]["description"]  # says what it counts

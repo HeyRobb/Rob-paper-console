@@ -536,38 +536,46 @@ def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
     config_schema={
         "type": "object",
         "description": (
-            "Arts, food and fun days print first, then animal, special interest, relationship, "
-            "cultural, appreciation and religious days, then health, cause and federal days, "
-            "unless you keep the site's order. Tick a \"Skip\" box to leave that kind of day "
-            "out (upcoming days too); days the site doesn't label with a category are always "
-            "kept in today's list."
+            "The top of the receipt lists today's national days with ways to celebrate them "
+            "(the \"Today\" settings). Turn on the Upcoming Days section for a short list of the "
+            "next few dates (the \"Upcoming\" settings). Arts, food and fun days print first, then "
+            "animal, special interest, relationship, cultural, appreciation and religious days, then "
+            "health, cause and federal days, unless you keep the site's order. Tick a \"Skip\" box to "
+            "leave that kind of day out of both lists; days the site doesn't label with a category "
+            "are always kept in today's list."
         ),
         "properties": {
             "count": {
                 "type": "integer",
-                "title": "Number of Days",
+                "title": "Today: Days to Print",
+                "description": "How many of today's national days print at the top, each with its ideas.",
                 "default": DEFAULT_COUNT,
                 "minimum": 1,
                 "maximum": MAX_COUNT,
             },
             "ideas": {
                 "type": "integer",
-                "title": "Ideas per Day",
+                "title": "Today: Ideas per Day",
                 "description": "Most days list about 3 ideas, so a higher number rarely prints more.",
                 "default": DEFAULT_IDEAS,
                 "minimum": 1,
                 "maximum": MAX_IDEAS,
             },
+            "keep_page_order": {
+                "type": "boolean",
+                "title": "Today: Keep the site's order (otherwise arts, food and fun days print first)",
+                "default": False,
+            },
             "show_upcoming": {
                 "type": "boolean",
-                "title": "Show upcoming days (arts, food and fun only)",
+                "title": "Upcoming: Add an Upcoming Days section (arts, food and fun only)",
                 "default": False,
             },
             "upcoming_count": {
                 "type": "integer",
-                "title": "Upcoming Dates to Show",
+                "title": "Upcoming: Dates to List",
                 "description": (
-                    "Used when upcoming days are shown: how many dates to list. A date with no arts, "
+                    "How many future dates the Upcoming Days section lists. A date with no arts, "
                     f"food or fun day is left out; looks up to {UPCOMING_LOOKAHEAD_DAYS} days ahead."
                 ),
                 "default": DEFAULT_UPCOMING,
@@ -576,16 +584,11 @@ def _print_upcoming(printer, config: Dict[str, Any], target_date: date) -> bool:
             },
             "upcoming_per_day": {
                 "type": "integer",
-                "title": "Days per Upcoming Date",
-                "description": "The most days listed under each upcoming date (arts first, then food, then fun).",
+                "title": "Upcoming: Days per Date",
+                "description": "The most national days listed under each upcoming date (arts first, then food, then fun).",
                 "default": DEFAULT_UPCOMING_PER_DAY,
                 "minimum": 1,
                 "maximum": MAX_UPCOMING_PER_DAY,
-            },
-            "keep_page_order": {
-                "type": "boolean",
-                "title": "Keep the site's order (otherwise arts, food and fun days print first)",
-                "default": False,
             },
             **{key: {"type": "boolean", "title": title, "default": False} for _label, key, title in CATEGORIES},
         },
