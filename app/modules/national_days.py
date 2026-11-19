@@ -64,11 +64,21 @@ NON_HOLIDAY_SLUGS = {
     "our-publishing-standards", "popular-holidays",
 }
 
-# Category labels shown next to each entry in the daily list.
-CATEGORY_LABELS = {
-    "health", "cause", "federal", "fun", "food & beverage", "special interest",
-    "arts & entertainment", "cultural", "appreciation",
-}
+# Category labels the site shows beside each entry, with the "Skip ..." checkbox for each
+# (same convention as the History module: a ticked box leaves that kind of day out, because
+# the settings form shows an unset checkbox as unchecked). Fun-leaning categories come first.
+CATEGORIES = [
+    ("fun", "exclude_fun", "Skip fun days"),
+    ("food & beverage", "exclude_food_beverage", "Skip food & beverage days"),
+    ("special interest", "exclude_special_interest", "Skip special interest days"),
+    ("arts & entertainment", "exclude_arts_entertainment", "Skip arts & entertainment days"),
+    ("cultural", "exclude_cultural", "Skip cultural days"),
+    ("appreciation", "exclude_appreciation", "Skip appreciation days"),
+    ("health", "exclude_health", "Skip health days"),
+    ("cause", "exclude_cause", "Skip cause days"),
+    ("federal", "exclude_federal", "Skip federal days"),
+]
+CATEGORY_LABELS = {label for label, _key, _title in CATEGORIES}
 # Days that make a better "fun ways to celebrate" receipt than awareness days.
 FUN_CATEGORIES = {"fun", "food & beverage", "special interest", "arts & entertainment"}
 SERIOUS_CATEGORIES = {"health", "cause", "federal", "cultural", "appreciation"}
@@ -294,13 +304,26 @@ def _fun_rank(holiday: Dict[str, Any]) -> int:
     return 2 if category in SERIOUS_CATEGORIES else 1
 
 
+def _skipped_categories(config: Dict[str, Any] | None) -> frozenset:
+    """Category labels switched off by the "Skip ..." checkboxes."""
+    cfg = config or {}
+    return frozenset(label for label, key, _title in CATEGORIES if cfg.get(key))
+
+
 def load_national_days(
-    target_date: date, count: int, idea_limit: int, keep_page_order: bool = False
+    target_date: date,
+    count: int,
+    idea_limit: int,
+    keep_page_order: bool = False,
+    skip_categories: frozenset = frozenset(),
 ) -> Optional[List[Dict[str, Any]]]:
     """Today's holidays with their celebration ideas, or None when the list cannot be loaded.
 
-    A failed load is not cached, so the next print tries again. Holiday pages
-    that fail or have no ideas still come back, with an empty idea list.
+    An empty list means the list loaded but every holiday was skipped by category.
+    Days with no recognised category label are never skipped, since they can't be
+    classified. A failed load is not cached, so the next print tries again; holiday
+    pages that fail or have no ideas still come back, with an empty idea list.
+    Skipping happens after the per-day cache, so changing it never costs a request.
     """
     deadline = time.monotonic() + TOTAL_BUDGET_SECONDS
     with _cache_lock:
@@ -316,7 +339,8 @@ def load_national_days(
         with _cache_lock:
             _cache["holidays"] = holidays
 
-    chosen = list(holidays) if keep_page_order else sorted(holidays, key=_fun_rank)  # stable sort
+    wanted = [h for h in holidays if h["category"] not in skip_categories]
+    chosen = wanted if keep_page_order else sorted(wanted, key=_fun_rank)  # stable sort
     results: List[Dict[str, Any]] = []
     fetched_any = False
     for holiday in chosen[:count]:
@@ -370,6 +394,11 @@ def _shorten(text: str, limit: int) -> str:
     category="content",
     config_schema={
         "type": "object",
+        "description": (
+            "Fun, food and special-interest days print first unless you keep the site's "
+            "order. Tick a \"Skip\" box to leave that kind of day out; days the site doesn't "
+            "label with a category are always kept."
+        ),
         "properties": {
             "count": {
                 "type": "integer",
@@ -395,6 +424,7 @@ def _shorten(text: str, limit: int) -> str:
                 "title": "Keep the site's order (otherwise fun and food days print first)",
                 "default": False,
             },
+            **{key: {"type": "boolean", "title": title, "default": False} for _label, key, title in CATEGORIES},
         },
     },
 )
@@ -410,11 +440,17 @@ def format_national_days_receipt(printer, config: Dict[str, Any] = None, module_
     printer.print_caption(target_date.strftime("%B %d, %Y"))
     printer.print_line()
 
-    days = load_national_days(target_date, count, idea_limit, bool(config.get("keep_page_order")))
-    if not days:
+    days = load_national_days(
+        target_date, count, idea_limit, bool(config.get("keep_page_order")), _skipped_categories(config)
+    )
+    if days is None:
         printer.print_body("Couldn't load today's")
         printer.print_body("national days. Check the")
         printer.print_body("internet connection.")
+        return
+    if not days:
+        printer.print_body("No national days today")
+        printer.print_body("match your settings.")
         return
 
     for index, day in enumerate(days):

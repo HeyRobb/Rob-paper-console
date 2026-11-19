@@ -508,7 +508,11 @@ def test_module_is_registered_online_with_a_validated_config():
 
     module_registry.validate_module_config("national_days", {})
     module_registry.validate_module_config("national_days", {"count": 5, "ideas": 4, "include_details": True})
-    for bad in ({"count": 0}, {"count": 6}, {"ideas": 5}, {"count": "three"}, {"include_details": "yes"}):
+    module_registry.validate_module_config("national_days", {"exclude_fun": True, "exclude_cause": False})
+    for bad in (
+        {"count": 0}, {"count": 6}, {"ideas": 5}, {"count": "three"}, {"include_details": "yes"},
+        {"exclude_cause": "yes"},
+    ):
         with pytest.raises(ValueError):
             module_registry.validate_module_config("national_days", bad)
 
@@ -603,3 +607,80 @@ def test_receipt_never_raises_on_a_broken_page(site):
 def test_shorten_cuts_on_a_word_boundary():
     assert nd._shorten("short text", 50) == "short text"
     assert nd._shorten("alpha beta gamma delta", 12) == "alpha beta..."
+
+
+# ---- category checkboxes ------------------------------------------------------------------
+
+
+def test_there_is_one_unticked_skip_checkbox_for_each_known_category():
+    props = module_registry.get_module("national_days").config_schema["properties"]
+    boxes = {key: spec for key, spec in props.items() if key.startswith("exclude_")}
+
+    assert len(boxes) == len(nd.CATEGORIES) == 9
+    assert {label for label, _key, _title in nd.CATEGORIES} == nd.CATEGORY_LABELS
+    assert set(boxes) == {key for _label, key, _title in nd.CATEGORIES}
+    assert all(spec["type"] == "boolean" and spec["default"] is False for spec in boxes.values())
+    assert all(spec["title"].startswith("Skip ") for spec in boxes.values())
+
+
+def test_ticked_boxes_map_to_the_category_labels_they_skip():
+    config = {"exclude_fun": True, "exclude_food_beverage": 1, "exclude_cause": False, "count": 3}
+
+    assert nd._skipped_categories(config) == {"fun", "food & beverage"}
+    assert nd._skipped_categories({}) == frozenset()
+    assert nd._skipped_categories(None) == frozenset()
+
+
+def test_skipped_categories_are_left_out_before_the_count_is_applied(site):
+    days = nd.load_national_days(
+        TODAY, count=3, idea_limit=1, skip_categories=frozenset({"fun", "food & beverage"})
+    )
+
+    assert [d["name"] for d in days] == ["National Camp Day", "Great American Smokeout", "International Men's Day"]
+    # Skipped days cost nothing: their pages are never requested.
+    assert "https://nationaltoday.com/beaujolais-nouveau-day/" not in site.urls
+    assert "https://nationaltoday.com/have-a-bad-day-day/" not in site.urls
+
+
+def test_changing_the_checkboxes_does_not_refetch_the_list(site):
+    nd.load_national_days(TODAY, count=2, idea_limit=1)
+    nd.load_national_days(TODAY, count=2, idea_limit=1, skip_categories=frozenset({"fun"}))
+
+    assert site.urls.count(nd.TODAY_URL) == 1
+
+
+def test_skipping_every_category_returns_an_empty_list_not_a_failure(site):
+    days = nd.load_national_days(TODAY, count=5, idea_limit=1, skip_categories=frozenset(nd.CATEGORY_LABELS))
+
+    assert days == []  # [] means "loaded, nothing left"; None would mean "could not load"
+    assert site.urls == [nd.TODAY_URL]
+
+
+def test_days_without_a_category_label_are_never_skipped(site):
+    site.pages[nd.TODAY_URL] = (
+        "<h2>All holidays today</h2><ul>"
+        '<li><a href="/mystery-day/">Mystery Day</a></li>'
+        '<li><span>Fun</span><a href="/fun-day/">Fun Day</a></li></ul>'
+    )
+    site.pages["https://nationaltoday.com/mystery-day/"] = _holiday_page("Mystery Day", _ideas_for("Mystery"))
+
+    days = nd.load_national_days(TODAY, count=5, idea_limit=1, skip_categories=frozenset(nd.CATEGORY_LABELS))
+
+    assert [d["name"] for d in days] == ["Mystery Day"]
+
+
+def test_receipt_leaves_out_the_categories_whose_boxes_are_ticked(site):
+    calls = _print(
+        {"count": 5, "exclude_fun": True, "exclude_food_beverage": True, "exclude_special_interest": True}
+    )
+
+    assert [c[1] for c in calls if c[0] == "bold"] == ["Great American Smokeout", "International Men's Day"]
+
+
+def test_receipt_says_nothing_matches_when_every_box_is_ticked(site):
+    calls = _print({key: True for _label, key, _title in nd.CATEGORIES})
+
+    assert ("body", "No national days today") in calls
+    assert ("body", "match your settings.") in calls
+    assert ("body", "internet connection.") not in calls  # the site loaded fine; that is not a failure
+    assert not [c for c in calls if c[0] == "bold"]

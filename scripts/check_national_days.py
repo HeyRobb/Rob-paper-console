@@ -62,6 +62,15 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=nd.DEFAULT_COUNT, help="days to print (default %(default)s)")
     parser.add_argument("--ideas", type=int, default=nd.DEFAULT_IDEAS, help="ideas per day (default %(default)s)")
     parser.add_argument("--keep-page-order", action="store_true", help="don't put fun and food days first")
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        choices=sorted(nd.CATEGORY_LABELS),
+        metavar="CATEGORY",
+        help="leave a category out, like ticking its Skip checkbox; repeatable, e.g. --skip cause "
+        "--skip 'food & beverage'. One of: " + ", ".join(sorted(nd.CATEGORY_LABELS)),
+    )
     parser.add_argument("--save-html", metavar="DIR", help="also save each fetched page here")
     args = parser.parse_args()
 
@@ -89,7 +98,7 @@ def main() -> int:
     nd._fetch_html = reporting_fetch
 
     day = nd._resolve_reference_date({})
-    days = nd.load_national_days(day, args.count, args.ideas, args.keep_page_order)
+    days = nd.load_national_days(day, args.count, args.ideas, args.keep_page_order, frozenset(args.skip))
 
     holidays = nd._cache["holidays"]
     if holidays is None:
@@ -122,11 +131,14 @@ def main() -> int:
         print("app/modules/national_days.py. (--save-html DIR keeps the pages so you can look at them.)")
 
     print("\nReceipt as it would print:")
-    nd.format_national_days_receipt(
-        _TextPrinter(),
-        {"count": args.count, "ideas": args.ideas, "include_details": True, "keep_page_order": args.keep_page_order},
-        None,
-    )
+    config = {
+        "count": args.count,
+        "ideas": args.ideas,
+        "include_details": True,
+        "keep_page_order": args.keep_page_order,
+        **{key: True for label, key, _title in nd.CATEGORIES if label in args.skip},
+    }
+    nd.format_national_days_receipt(_TextPrinter(), config, None)
     return 0
 
 
