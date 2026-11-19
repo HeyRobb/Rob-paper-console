@@ -1100,7 +1100,7 @@ def test_upcoming_is_never_fetched_unless_asked_for(site):
     assert not [url for url in site.urls if nd._is_date_url(url)]
 
 
-def test_receipt_puts_a_bold_date_before_each_upcoming_dates_days_and_prints_only_name_and_category(site):
+def test_receipt_puts_a_bold_date_before_each_upcoming_dates_days_and_prints_only_their_names(site):
     _add_date_pages(site)
 
     calls = _print({"count": 1, "ideas": 1, "show_upcoming": True})
@@ -1112,21 +1112,15 @@ def test_receipt_puts_a_bold_date_before_each_upcoming_dates_days_and_prints_onl
         ("line",),
         ("bold", "Fri, Nov 20"),
         ("body", "National Peanut Butter Fudge Day"),
-        ("caption", "Food & Beverage"),
         ("body", "National Absurdity Day"),
-        ("caption", "Fun"),
         ("line",),
         ("bold", "Sat, Nov 21"),
         ("body", "National Movie Day"),
-        ("caption", "Arts & Entertainment"),
         ("body", "National Stuffing Day"),
-        ("caption", "Food & Beverage"),
         ("line",),
         ("bold", "Sun, Nov 22"),
         ("body", "National Cranberry Relish Day"),
-        ("caption", "Food & Beverage"),
         ("body", "Go For A Ride Day"),
-        ("caption", "Fun"),
         ("line",),
         ("caption", "via nationaltoday.com"),
     ]
@@ -1197,8 +1191,9 @@ def test_skip_checkboxes_also_leave_days_out_of_the_upcoming_list(site):
     calls = _print({"count": 1, "show_upcoming": True, "upcoming_per_day": 5, "exclude_fun": True})
 
     start = calls.index(("bold", "UPCOMING DAYS"))
-    assert ("caption", "Fun") not in calls[start:]
-    assert ("body", "National Absurdity Day") not in calls
+    shown = [c[1] for c in calls[start:] if c[0] == "body"]
+    assert "National Absurdity Day" not in shown and "Go For A Ride Day" not in shown  # the fun days
+    assert "National Stuffing Day" in shown and "National Movie Day" in shown  # food and arts still listed
 
 
 def test_upcoming_still_prints_when_every_one_of_todays_days_is_skipped(site):
@@ -1288,3 +1283,16 @@ def test_a_rule_is_printed_directly_above_every_upcoming_date(site, dates):
     # Rules: one above each date, plus the one that closes the receipt before the credit line.
     assert section.count(("line",)) == dates + 1
     assert not [i for i, call in enumerate(section) if call == ("line",) and section[i - 1] == ("line",)]  # never doubled
+
+
+def test_the_upcoming_section_prints_no_category_lines_but_still_filters_by_category(site):
+    _add_date_pages(site)
+
+    calls = _print({"count": 1, "show_upcoming": True, "upcoming_per_day": 5})
+
+    start = calls.index(("bold", "UPCOMING DAYS"))
+    captions = [c[1] for c in calls[start:] if c[0] == "caption"]
+    assert captions == ["via nationaltoday.com"]  # no "Food & Beverage", "Fun", ... under the names
+    shown = [c[1] for c in calls[start:] if c[0] == "body"]
+    assert "Future Teachers of America Day" not in shown and "Transgender Day of Remembrance" not in shown
+    assert "National Peanut Butter Fudge Day" in shown
