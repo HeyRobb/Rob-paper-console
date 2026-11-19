@@ -80,7 +80,13 @@ _DATE_LABEL = re.compile(
 _SLUG_PATH = re.compile(r"/[a-z0-9][a-z0-9-]*/?")
 _LISTING_SLUG = re.compile(r"-(?:holidays|birthdays)$")
 _HOLIDAYS_HEADING = re.compile(r"\bholidays today\b|\btoday'?s holidays\b", re.IGNORECASE)
-_CELEBRATE_HEADING = re.compile(r"^(?:how to|ways to)\s+celebrate\b", re.IGNORECASE)
+# The section's h2 is worded per page: "How To Celebrate X", "How to Observe X",
+# "Ways to Celebrate X" or "X Activities". "How Businesses Can Celebrate X" is
+# deliberately not matched: it is advice for companies, not ideas for people.
+_CELEBRATE_HEADING = re.compile(
+    r"^(?:how to|ways to)\s+(?:celebrate|observe|honou?r|mark|enjoy|spend)\b|\bactivities$",
+    re.IGNORECASE,
+)
 _HEADING = re.compile(r"h[1-6]")
 _NOISE = {"advertisement", "sponsored", "ad"}
 
@@ -231,8 +237,9 @@ def parse_celebrate_ideas(html: str | None) -> List[Dict[str, str]]:
     matched. Returns an empty list when the page has no such section.
     """
     soup = BeautifulSoup(html or "", "html.parser")
+    # h2 only: the page's FAQ questions are h3s and must not be mistaken for the section.
     heading = next(
-        (h for h in soup.find_all(["h2", "h3"]) if _CELEBRATE_HEADING.match(_clean(h.get_text(" ")))),
+        (h for h in soup.find_all("h2") if _CELEBRATE_HEADING.search(_clean(h.get_text(" ")))),
         None,
     )
     if heading is None:
@@ -324,7 +331,14 @@ def load_national_days(
                 ideas = parse_celebrate_ideas(html)
                 with _cache_lock:
                     _cache["ideas"][holiday["url"]] = ideas
-        results.append({"name": holiday["name"], "category": holiday["category"], "ideas": (ideas or [])[:idea_limit]})
+        results.append(
+            {
+                "name": holiday["name"],
+                "url": holiday["url"],
+                "category": holiday["category"],
+                "ideas": (ideas or [])[:idea_limit],
+            }
+        )
     return results
 
 

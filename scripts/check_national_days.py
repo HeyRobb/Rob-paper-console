@@ -28,7 +28,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from bs4 import BeautifulSoup  # noqa: E402
+
 from app.modules import national_days as nd  # noqa: E402
+
+_clean = nd._clean
 
 
 class _TextPrinter:
@@ -67,12 +71,15 @@ def main() -> int:
 
     real_fetch = nd._fetch_html
     list_fetch_failed = False
+    pages = {}
 
     def reporting_fetch(url, deadline):
         nonlocal list_fetch_failed
         html = real_fetch(url, deadline)
         if url == nd.TODAY_URL and html is None:
             list_fetch_failed = True
+        if html is not None:
+            pages[url] = html
         print(f"fetch {url} -> " + (f"ok, {len(html):,} characters" if html is not None else "FAILED"))
         if html is not None and save_dir:
             name = urlparse(url).path.strip("/") or "index"
@@ -101,10 +108,18 @@ def main() -> int:
     if missing_categories:
         print(f"  note: {missing_categories} had no recognised category label, so they sort between fun and serious days.")
 
-    empty = [d["name"] for d in days or [] if not d["ideas"]]
+    empty = [d for d in days or [] if not d["ideas"]]
     if empty:
-        print(f"\nNo 'How To Celebrate' ideas parsed for: {', '.join(empty)}")
-        print("(page fetch failed, or that page has no such section; --save-html lets you check)")
+        print("\nNo ways-to-celebrate ideas were found for:")
+        for day_without_ideas in empty:
+            html = pages.get(day_without_ideas["url"])
+            if html is None:
+                print(f"  - {day_without_ideas['name']}: the page could not be fetched")
+                continue
+            h2s = [_clean(h.get_text(" ")) for h in BeautifulSoup(html, "html.parser").find_all("h2")]
+            print(f"  - {day_without_ideas['name']}: its h2 headings are: " + " | ".join(h[:60] for h in h2s[:20]))
+        print("If one of those headings is the ideas section, add its wording to _CELEBRATE_HEADING in")
+        print("app/modules/national_days.py. (--save-html DIR keeps the pages so you can look at them.)")
 
     print("\nReceipt as it would print:")
     nd.format_national_days_receipt(

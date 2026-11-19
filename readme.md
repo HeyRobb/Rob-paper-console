@@ -558,6 +558,6 @@ Legend: `[X]` = Used, `[ ]` = Empty. The header is 2 pins wide.
 * **Email Auth Failed:** Use a **Google App Password**, not your main password. Ensure 2FA is enabled
 * **Calendar Not Showing Events:** Verify iCal URL is correct. Check that events exist in the date range
 * **Weather Wrong:** Check `config.json` Lat/Long via UI location search feature
-* **National Days Says It Couldn't Load:** Check the device has internet, then run `./.venv/bin/python scripts/check_national_days.py`. Exit 1 means the page couldn't be downloaded; exit 2 means it downloaded but the holiday list wasn't found in it (the site changed; see `parse_today_page` in `app/modules/national_days.py`)
+* **National Days Says It Couldn't Load:** Check the device has internet, then run `./.venv/bin/python scripts/check_national_days.py`. Exit 1 means the page couldn't be downloaded; exit 2 means it downloaded but the holiday list wasn't found in it (the site changed; see `parse_today_page` in `app/modules/national_days.py`). If days print without ideas, the script lists that page's `h2` headings; add the ideas section's wording to `_CELEBRATE_HEADING` in the same file (the site words it per page: "How To Celebrate X", "X Activities", "How to Observe X", ...)
 
 ---

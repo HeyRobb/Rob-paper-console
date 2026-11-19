@@ -71,14 +71,22 @@ FUN_FIRST = [
 ]
 
 
-def _holiday_page(name, ideas):
-    items = "".join(f"<li><h3>{title}</h3><p>{text}</p></li>" for title, text in ideas)
+def _holiday_page(name, ideas, heading=None):
+    """A holiday page shaped like the real ones: each h2 section is an ol of li > div > h3 + p.
+
+    The text is invented; only the structure follows the live pages, where the ideas
+    section's h2 is worded per page ("How To Celebrate X", "X Activities", ...).
+    """
+    heading = heading or f"How To Celebrate {name}"
+    items = "".join(f"<li><div><h3>{title}</h3><p>{text}</p></div></li>" for title, text in ideas)
     return f"""
     <html><body><main>
       <h1>{name} - November 19, 2026</h1><p>A short intro about {name}.</p>
+      <h2>Top Brands for {name}</h2><ol><li><div><h3>Some Brand</h3><p>Sells things.</p></div></li></ol>
       <h2>How Businesses Can Celebrate {name}</h2><p>Run a promotion.</p>
-      <h2>How To Celebrate {name}</h2><ol>{items}</ol>
-      <h2>5 Facts About {name}</h2><h3>Not an idea</h3><p>Just a fact.</p>
+      <h2>{name} FAQ s</h2><h3>How to celebrate {name}?</h3><p>Any way you like.</p>
+      <h2>{heading}</h2><ol>{items}</ol>
+      <h2>5 Facts About {name}</h2><ol><li><div><h3>Not an idea</h3><p>Just a fact.</p></div></li></ol>
     </main></body></html>
     """
 
@@ -286,6 +294,57 @@ def test_ideas_come_from_the_how_to_celebrate_section_only():
     assert ideas[0]["text"] == "Do the first fun thing for Cider, with friends and snacks."
     # Not the "How Businesses Can Celebrate" section, and not the facts section after it.
     assert all("Not an idea" != i["title"] for i in ideas)
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "How To Celebrate Apple Cider Day",
+        "How to Observe International Journalist Day",
+        "National Camp Day Activities",
+        "Beaujolais Nouveau Day Activities",
+        "Ways to Celebrate Pi Day",
+        "How To Honor Teachers Day",
+    ],
+)
+def test_every_known_wording_of_the_ideas_heading_is_found(heading):
+    ideas = nd.parse_celebrate_ideas(_holiday_page("Some Day", _ideas_for("Some"), heading=heading))
+
+    assert [i["title"] for i in ideas] == ["Some idea one", "Some idea two", "Some idea three"]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "How Businesses Can Celebrate Some Day",
+        "Top Brands for Some Day",
+        "Platform Guide for Some Day",
+        "Social Media Tips for Some Day",
+        "Why We Love Some Day",
+        "5 Facts About Some Day",
+        "Some Day FAQ s",
+        "Some Day timeline",
+    ],
+)
+def test_other_sections_with_the_same_shape_are_never_taken_for_the_ideas(heading):
+    html = f"<h2>{heading}</h2><ol><li><div><h3>Not an idea</h3><p>Some text.</p></div></li></ol>"
+
+    assert nd.parse_celebrate_ideas(html) == []
+
+
+def test_an_faq_question_in_an_h3_is_not_taken_for_the_ideas_section():
+    html = "<h2>Some Day FAQ s</h2><h3>How to celebrate Some Day?</h3><p>However you like.</p>"
+
+    assert nd.parse_celebrate_ideas(html) == []
+
+
+def test_the_ideas_section_stops_at_the_next_h2_even_when_it_has_many_items():
+    ideas = [(f"Idea {n}", f"Text {n}.") for n in range(1, 7)]
+
+    found = nd.parse_celebrate_ideas(_holiday_page("Some Day", ideas, heading="Some Day Activities"))
+
+    assert [i["title"] for i in found] == [f"Idea {n}" for n in range(1, 7)]
+    assert found[-1]["text"] == "Text 6."
 
 
 def test_ideas_are_also_read_from_plain_list_items():
