@@ -354,7 +354,7 @@ def test_config_schema_has_one_skip_checkbox_per_genre_defaulting_to_unchecked()
 
 def test_shipped_themed_file_is_well_formed():
     raw = json.loads(history_module.THEMED_DB_PATH.read_text(encoding="utf-8"))
-    valid_categories = {"film_tv", "music", "games", "tech", "culture"}
+    valid_categories = history_module.ALL_GENRE_CATEGORIES
 
     for month, days in raw["events"].items():
         for day, entries in days.items():

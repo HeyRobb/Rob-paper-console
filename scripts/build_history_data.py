@@ -143,7 +143,7 @@ DEFAULT_SINCE: Dict[str, int] = {
 # Minimum number of Wikipedia language editions (the fame cut-off) per kind.
 DEFAULT_MIN_SITELINKS: Dict[str, int] = {
     "film": 45, "game": 30, "birth": 60,
-    "tv": 40, "console": 25, "space": 30, "company": 60, "invention": 40,
+    "tv": 40, "console": 25, "space": 45, "company": 60, "invention": 85,
 }
 # Sparse kinds use wider year windows (multiples of --window-years) so they need
 # far fewer queries.
@@ -557,11 +557,14 @@ def _best_cache_rows(
     kinds: Iterable[str],
     since: Optional[Dict[str, int]] = None,
     occupations: Optional[List[Tuple[str, str]]] = None,
+    min_sitelinks: Optional[Dict[str, int]] = None,
 ) -> Dict[Tuple[str, str], Dict[str, Any]]:
     """One cached row per (kind, Wikidata item), honouring the scope limits.
 
-    kinds, since and occupations apply the same limits as fetch_wikidata, so
-    windows cached by an earlier, wider run never leak into a narrower build.
+    kinds, since, occupations and min_sitelinks apply the same limits as
+    fetch_wikidata, so windows cached by an earlier, wider or less selective run
+    never leak into a narrower or stricter build. (Raising a fame cut-off needs no
+    new fetch; lowering one below what was fetched does.)
     A film or game keeps its earliest release date; a person keeps the
     highest-priority occupation (see BIRTH_OCCUPATIONS).
     """
@@ -581,6 +584,8 @@ def _best_cache_rows(
         for row in json.loads(path.read_text(encoding="utf-8")):
             if int(str(row["date"])[:4]) < first_year[kind]:
                 continue  # before the requested start year
+            if min_sitelinks and row["sl"] < min_sitelinks.get(kind, 0):
+                continue  # not famous enough for the current cut-off
             if kind == "birth" and allowed_occupations is not None \
                     and row["occ"] not in allowed_occupations:
                 continue
@@ -618,11 +623,21 @@ _SCIENCE_DENY = re.compile(
     re.IGNORECASE,
 )
 
-# Things in the sky or the ground are discovered; anything else is invented.
-_DISCOVERY_WORDS = re.compile(
-    r"\b(planets?|moons?|satellite|comets?|asteroids?|galax\w*|stars?|nebula\w*|supernova|"
-    r"chemical element|isotopes?|particles?|minerals?|fossils?|species|genus|"
-    r"constellation|ocean|continent|island|river|lake)\b",
+# Wikidata sometimes carries a "launch date" for things that are not spacecraft
+# (a TV network, a mobile game); those are not space entries.
+_NOT_SPACE = re.compile(
+    r"\b(television|network|games?|apps?|video|films?|company|software|mobile|streaming|series|channel)\b",
+    re.IGNORECASE,
+)
+
+# Discoveries and inventions share one Wikidata property, so the verb has to be
+# guessed. Human-made things (devices, software, methods) are "invented"; everything
+# else - planets, elements, places, finds - is "discovered", which is right far more
+# often than the other way round.
+_INVENTION_WORDS = re.compile(
+    r"\b(devices?|machines?|apparatus|software|computers?|programs?|programming|languages?|"
+    r"browsers?|protocols?|techniques?|methods?|algorithms?|engines?|vehicles?|instruments?|"
+    r"tools?|cameras?|process|technolog\w*|systems?|media|images?|animation|games?|toys?)\b",
     re.IGNORECASE,
 )
 
@@ -647,7 +662,7 @@ _COMPANY_CATEGORY_RULES = [
 _SIMPLE_ENTRY_KINDS = {
     "film": ("film_tv", "{label} is released."),
     "game": ("games", "{label} is released."),
-    "tv": ("film_tv", "{label} premieres on TV."),
+    "tv": ("film_tv", "{label} premieres."),
     "console": ("games", "{label} is released."),
     "space": ("science", "{label} launches."),
 }
@@ -670,7 +685,10 @@ def _entry_text_and_category(kind: str, row: Dict[str, Any]) -> Optional[Tuple[s
     description = row.get("desc", "")
     if kind in _SIMPLE_ENTRY_KINDS:
         category, template = _SIMPLE_ENTRY_KINDS[kind]
-        if kind == "space" and (_SPACE_DENY.search(label) or GRIM_PATTERN.search(description)):
+        if kind == "space" and (
+            _SPACE_DENY.search(label) or GRIM_PATTERN.search(description)
+            or _NOT_SPACE.search(description)
+        ):
             return None
         return template.format(label=label), category
     if kind == "company":
@@ -682,7 +700,7 @@ def _entry_text_and_category(kind: str, row: Dict[str, Any]) -> Optional[Tuple[s
         combined = f"{label} {description}"
         if GRIM_PATTERN.search(combined) or _SCIENCE_DENY.search(combined):
             return None
-        verb = "discovered" if _DISCOVERY_WORDS.search(combined) else "invented"
+        verb = "invented" if _INVENTION_WORDS.search(combined) else "discovered"
         return f"{label} is {verb}.", "science"
     return None
 
@@ -693,6 +711,7 @@ def load_wikidata_cache(
     since: Optional[Dict[str, int]] = None,
     occupations: Optional[List[Tuple[str, str]]] = None,
     today: Optional[date] = None,
+    min_sitelinks: Optional[Dict[str, int]] = None,
 ) -> List[Entry]:
     """Cached films, games, TV, consoles, launches, companies and inventions as entries.
 
@@ -700,7 +719,7 @@ def load_wikidata_cache(
     Rows dated after `today` (announced but not yet released) are skipped.
     """
     wanted = (set(kinds) if kinds is not None else set(WIKIDATA_KINDS)) & ENTRY_KINDS
-    best = _best_cache_rows(cache_dir, wanted, since, occupations)
+    best = _best_cache_rows(cache_dir, wanted, since, occupations, min_sitelinks)
     today = today or date.today()
 
     entries: List[Entry] = []
@@ -729,11 +748,13 @@ def load_birth_rows(
     cache_dir: Path = CACHE_DIR,
     since: Optional[Dict[str, int]] = None,
     occupations: Optional[List[Tuple[str, str]]] = None,
+    min_sitelinks: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """Cached people as {m, d, y, n (name), o (occupation), s (Wikipedia language editions)}."""
     occupation_name = dict(BIRTH_OCCUPATIONS)
     rows: List[Dict[str, Any]] = []
-    for (_kind, _qid_value), row in _best_cache_rows(cache_dir, {"birth"}, since, occupations).items():
+    for (_kind, _qid_value), row in _best_cache_rows(
+            cache_dir, {"birth"}, since, occupations, min_sitelinks).items():
         if not _usable_label(row):
             continue
         try:
@@ -942,6 +963,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     sources.append(f"curated milestones ({len(curated)} entries)")
     wikidata = load_wikidata_cache(
         args.cache_dir, kinds=args.wikidata_kinds, since=since, occupations=args.birth_occupations,
+        min_sitelinks=mins,
     )
     if wikidata:
         entries += wikidata
@@ -955,7 +977,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Famous birthdays live in their own file for the Birthdays module.
     if "birth" in args.wikidata_kinds:
-        birth_rows = load_birth_rows(args.cache_dir, since=since, occupations=args.birth_occupations)
+        birth_rows = load_birth_rows(args.cache_dir, since=since, occupations=args.birth_occupations,
+                                     min_sitelinks=mins)
         if birth_rows:
             births = build_birthdays(birth_rows, args.births_per_day)
             write_birthdays(args.birthdays_output, births,

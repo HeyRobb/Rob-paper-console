@@ -539,13 +539,15 @@ def test_tv_console_and_space_rows_become_entries_in_the_right_genre(bhd, tmp_pa
         _binding("Q4", "Soyuz 11", "1971-06-06", 90, desc="crewed Soviet space mission"),
         _binding("Q5", "Space Shuttle Challenger", "1983-04-04", 90, desc="space shuttle orbiter"),
         _binding("Q6", "Doomed Probe", "1965-03-03", 60, desc="probe that crashed on arrival"),
+        _binding("Q7", "Some TV Network", "1972-11-08", 90, desc="American pay television network"),
+        _binding("Q8", "Some Mobile Game", "2016-07-06", 90, desc="augmented reality mobile game"),
     ])
 
     kinds = ["tv", "console", "space"]
     entries = {e["t"]: e for e in bhd.load_wikidata_cache(cache, kinds=kinds, today=date(2026, 11, 19))}
 
-    assert set(entries) == {"Some Sitcom premieres on TV.", "Some Console is released.", "Sputnik 1 launches."}
-    assert entries["Some Sitcom premieres on TV."]["c"] == "film_tv"
+    assert set(entries) == {"Some Sitcom premieres.", "Some Console is released.", "Sputnik 1 launches."}
+    assert entries["Some Sitcom premieres."]["c"] == "film_tv"
     assert entries["Some Console is released."]["c"] == "games"
     sputnik = entries["Sputnik 1 launches."]
     assert (sputnik["m"], sputnik["d"], sputnik["y"], sputnik["c"]) == (10, 4, 1957, "science")
@@ -580,11 +582,19 @@ def test_invention_rows_say_discovered_or_invented_and_skip_medical_and_harmful_
         _binding("Q3", "Smallpox", "1796-05-14", 100, desc="infectious disease"),
         _binding("Q4", "Dynamite", "1867-11-07", 100, desc="explosive invented by Nobel"),
         _binding("Q5", "Deadly Gadget", "1900-01-01", 100, desc="device that kills"),
+        _binding("Q6", "web browser", "1990-12-20", 100, desc="software application for the web"),
+        _binding("Q7", "South Pole", "1911-12-14", 100, desc="southern point of the Earth's axis"),
+        _binding("Q8", "helium", "1868-08-18", 100, desc="chemical element with atomic number 2"),
     ])
 
     entries = {e["t"]: e["c"] for e in bhd.load_wikidata_cache(cache, kinds=["invention"], today=date(2026, 1, 1))}
 
-    assert entries == {"Pluto is discovered.": "science", "Telephone is invented.": "science"}
+    # human-made things are "invented"; everything else (places, planets, elements) "discovered"
+    assert entries == {
+        "Pluto is discovered.": "science", "Telephone is invented.": "science",
+        "web browser is invented.": "science", "South Pole is discovered.": "science",
+        "helium is discovered.": "science",
+    }
 
 
 def test_load_wikidata_cache_skips_rows_dated_in_the_future(bhd, tmp_path):
@@ -660,5 +670,42 @@ def test_main_offline_build_merges_new_kinds_and_writes_science_genre(bhd, tmp_p
 
     events = json.loads(out.read_text())["events"]
     by_text = {e["t"]: e["c"] for days in events.values() for day in days.values() for e in day}
-    assert by_text["Sputnik 1 launches."] == "science" and by_text["Some Sitcom premieres on TV."] == "film_tv"
+    assert by_text["Sputnik 1 launches."] == "science" and by_text["Some Sitcom premieres."] == "film_tv"
     assert {e["c"] for days in events.values() for day in days.values() for e in day} <= bhd.CATEGORIES
+
+
+def test_cache_rows_below_the_current_fame_cut_off_are_ignored_at_build_time(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "space", 1957, 1966, [
+        _binding("Q1", "Sputnik 1", "1957-10-04", 120, desc="first artificial Earth satellite"),
+        _binding("Q2", "Obscure Probe", "1965-03-03", 31, desc="space probe"),
+    ])
+    _write_rows(bhd, cache, "birth", 1950, 1954, [
+        _binding("Q3", "Famous Actor", "1952-03-03", 90, occ="Q33999"),
+        _binding("Q4", "Minor Actor", "1952-03-04", 41, occ="Q33999"),
+    ])
+    mins = {"space": 45, "birth": 60}
+    today = date(2026, 1, 1)
+
+    texts = {e["t"] for e in bhd.load_wikidata_cache(cache, kinds=["space"], min_sitelinks=mins, today=today)}
+    assert texts == {"Sputnik 1 launches."}
+    assert {e["t"] for e in bhd.load_wikidata_cache(cache, kinds=["space"], today=today)} == {
+        "Sputnik 1 launches.", "Obscure Probe launches."}  # no cut-off given: nothing is dropped
+    assert [p["n"] for p in bhd.load_birth_rows(cache, min_sitelinks=mins)] == ["Famous Actor"]
+
+
+def test_main_applies_the_command_line_fame_cut_offs_when_building(bhd, tmp_path):
+    cache = tmp_path / "cache"
+    _write_rows(bhd, cache, "invention", 1700, 2026, [
+        _binding("Q1", "Pluto", "1930-02-18", 200, desc="dwarf planet"),
+        _binding("Q2", "Tiny Moon", "2001-12-09", 50, desc="natural satellite"),
+    ])
+    out = tmp_path / "out.json"
+
+    assert bhd.main(["--no-classic", "--cache-dir", str(cache), "--output", str(out),
+                     "--wikidata-kinds", "invention"]) == 0  # default cut-off for inventions is 85
+
+    texts = {e["t"] for days in json.loads(out.read_text())["events"].values()
+             for day in days.values() for e in day}
+    assert "Pluto is discovered." in texts and "Tiny Moon is discovered." not in texts
+    assert bhd.DEFAULT_MIN_SITELINKS["invention"] >= 80 and bhd.DEFAULT_MIN_SITELINKS["space"] >= 40
