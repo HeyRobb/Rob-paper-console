@@ -20,13 +20,20 @@ Exit status: 0 = receipt would print, 1 = a page could not be fetched,
 """
 
 import argparse
+import platform
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Importing the app on a Raspberry Pi opens the real printer serial port and GPIO pins (about
+# 20 s on a Pi Zero, and it competes with the running service for the port). This script only
+# talks to nationaltoday.com, so present as a non-Pi and let the app pick its mock drivers.
+platform.system = lambda: "Darwin"
 
 from bs4 import BeautifulSoup  # noqa: E402
 
@@ -84,12 +91,15 @@ def main() -> int:
 
     def reporting_fetch(url, deadline):
         nonlocal list_fetch_failed
+        started = time.monotonic()
         html = real_fetch(url, deadline)
+        elapsed = time.monotonic() - started
         if url == nd.TODAY_URL and html is None:
             list_fetch_failed = True
         if html is not None:
             pages[url] = html
-        print(f"fetch {url} -> " + (f"ok, {len(html):,} characters" if html is not None else "FAILED"))
+        outcome = f"ok, {len(html):,} characters" if html is not None else "FAILED"
+        print(f"fetch {url} -> {outcome} ({elapsed:.1f} s)")
         if html is not None and save_dir:
             name = urlparse(url).path.strip("/") or "index"
             (save_dir / f"{name}.html").write_text(html, encoding="utf-8")
@@ -98,7 +108,9 @@ def main() -> int:
     nd._fetch_html = reporting_fetch
 
     day = nd._resolve_reference_date({})
+    load_started = time.monotonic()
     days = nd.load_national_days(day, args.count, args.ideas, args.keep_page_order, frozenset(args.skip))
+    load_seconds = time.monotonic() - load_started
 
     holidays = nd._cache["holidays"]
     if holidays is None:
@@ -139,6 +151,7 @@ def main() -> int:
         **{key: True for label, key, _title in nd.CATEGORIES if label in args.skip},
     }
     nd.format_national_days_receipt(_TextPrinter(), config, None)
+    print(f"\nTime this adds to a print: {load_seconds:.1f} s the first time each day, then none (cached).")
     return 0
 
 
